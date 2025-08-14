@@ -11,16 +11,22 @@
     "@nestjs/common": "^10.3.10",
     "@nestjs/core": "^10.3.10",
     "@nestjs/platform-express": "^10.3.10",
-    "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/auto-instrumentations-node": "^0.49.1",
     "@opentelemetry/exporter-prometheus": "^0.55.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.55.0",
-    "@opentelemetry/sdk-node": "^0.55.0"
+    "@opentelemetry/sdk-node": "^0.55.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "pg": "^8.11.3"
   },
   "devDependencies": {
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "@types/node": "^20.11.30",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.5"
   }
 }

@@ -73,6 +73,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
       - API_OTEL_PROM_PORT=${API_OTEL_PROM_PORT}
+      - JWT_SECRET=${JWT_SECRET}
     expose: ["3001", "9464"]
     depends_on:
       postgres:
@@ -104,6 +105,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
       - API_OTEL_PROM_PORT=${API_OTEL_PROM_PORT}
+      - JWT_SECRET=${JWT_SECRET}
     expose: ["3001", "9464"]
     profiles: ["green"]
     depends_on:
