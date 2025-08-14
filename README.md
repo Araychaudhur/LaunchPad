@@ -2,82 +2,85 @@
 
 ![ci](https://github.com/Araychaudhur/LaunchPad/actions/workflows/ci.yml/badge.svg?branch=main)
 
-A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**, **NestJS (API)**, **Postgres**, **Redis**, **Nginx edge**, and **Observability** (OpenTelemetry → Collector, Prometheus, Grafana). Fully containerized for **Windows + VSCode** with **Docker only** (no Node or pnpm required on host).
-
-> **This README documents M1a** (after M0). What’s included now: **multitenancy schema**, **Postgres RLS**, **seeded demo tenant**, **JWT login**, and **tenant-scoped APIs** (`/api/me`, `/api/orgs`).
+A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**, **NestJS (API)**, **Postgres**, **Redis**, **Nginx edge**, and **Observability** (OpenTelemetry → Collector, Prometheus, Grafana). Fully containerized for **Windows + VSCode** with **Docker only**.
 
 ---
 
 ## Run in 60 seconds (Windows PowerShell)
+
 ```powershell
 Copy-Item .env.example .env
 docker compose up --build -d
 ```
 
 ### Open these in your browser
-- App: http://localhost:8080/
-- API health: http://localhost:8080/api/health
-- Prometheus: http://localhost:9090/
-- Grafana: http://localhost:3002/ (admin/admin)
-- MailDev: http://localhost:1080/
 
-If a page doesn't load immediately, wait ~10–20 seconds and refresh (containers are starting).
+* App: [http://localhost:8080/](http://localhost:8080/)
+* API health: [http://localhost:8080/api/health](http://localhost:8080/api/health)
+* Prometheus: [http://localhost:9090/](http://localhost:9090/)
+* Grafana: [http://localhost:3002/](http://localhost:3002/) (admin/admin)
+* MailDev: [http://localhost:1080/](http://localhost:1080/)
 
 ---
 
 ## Blue/Green demo (local)
-Bring up identical green services and switch traffic without downtime.
 
 ```powershell
 # Start green alongside blue
 docker compose --profile green up -d --build api-green web-green
 
-# Switch traffic to green
+# Switch traffic to green via edge
 $env:ACTIVE_COLOR = "green"
 docker compose up -d edge
 ```
 
-Switch back by setting `ACTIVE_COLOR="blue"` and restarting the `edge` service.
+Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 
 ---
 
-## What’s new in **M1a**
-- **Postgres schema**: tenants, users, orgs, memberships.
-- **Row Level Security (RLS)**: enforced via per-request GUCs (`app.tenant_id`, `app.user_id`) so queries are **tenant-scoped** automatically.
-- **Seeded demo data**: tenant `Acme`, org `Acme HQ`, admin user `admin@acme.test` / `admin123!`.
-- **JWT auth**:
-  - `POST /api/auth/login` → `{ token }` (HS256; 1d).
-  - `GET /api/me` (JWT) → user + tenant ids.
-  - `GET /api/orgs` (JWT) → orgs visible to the logged-in tenant (RLS enforced).
+## Milestones & Progress
 
----
+### ✅ M0 — Bootable skeleton
 
-## API Quick Verify (PowerShell)
-```powershell
-# 1) Login to obtain a JWT
-$body = @{ email = "admin@acme.test"; password = "admin123!" } | ConvertTo-Json
-$login = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/auth/login -ContentType "application/json" -Body $body
-$token = $login.token
+* Next.js + NestJS behind Nginx edge (rate limiting + passive circuit-breaker).
+* Postgres, Redis, MailDev; OpenTelemetry → Collector; Prometheus + Grafana datasource.
+* Docker-only dev (no Node on host). GitHub Actions CI health-check via edge.
+* **Outcome:** `docker compose up --build` brings a working stack; `/api/health` OK.
 
-# 2) Inspect your identity
-Invoke-RestMethod -Uri http://localhost:8080/api/me -Headers @{ Authorization = "Bearer $token" }
+### ✅ M1a — Multitenancy + RLS + JWT + seed
 
-# 3) List orgs for your tenant (RLS applied)
-Invoke-RestMethod -Uri http://localhost:8080/api/orgs -Headers @{ Authorization = "Bearer $token" }
-```
-**Demo creds:** `admin@acme.test` / `admin123!`
+* **Schema:** tenants, users, orgs, memberships.
+* **RLS:** enforced via per-request GUCs (`app.tenant_id`, `app.user_id`).
+* **Seed:** tenant `Acme`, org `Acme HQ`, admin user `admin@acme.test` / `admin123!`.
+* **API:** `POST /api/auth/login` → `{ token }`, `GET /api/me`, `GET /api/orgs` (RLS).
+* **Quick verify (PowerShell):**
 
-Equivalent with `curl`:
-```bash
-TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login   -H "content-type: application/json"   -d '{"email":"admin@acme.test","password":"admin123!"}' | jq -r .token)
+  ```powershell
+  $body = @{ email = "admin@acme.test"; password = "admin123!" } | ConvertTo-Json
+  $login = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/auth/login -ContentType "application/json" -Body $body
+  $token = $login.token
+  Invoke-RestMethod -Uri http://localhost:8080/api/me   -Headers @{ Authorization = "Bearer $token" }
+  Invoke-RestMethod -Uri http://localhost:8080/api/orgs -Headers @{ Authorization = "Bearer $token" }
+  ```
 
-curl -s http://localhost:8080/api/me   -H "authorization: Bearer $TOKEN" | jq
-curl -s http://localhost:8080/api/orgs -H "authorization: Bearer $TOKEN" | jq
-```
+  **Expected:** `/me` shows your ids; `/orgs` shows `[ { name: "Acme HQ" } ]`.
+
+### ✅ M1b — Web login (NextAuth) + admin page
+
+* **NextAuth (Credentials)** on web bridges to API `/auth/login`.
+* API JWT stored on the NextAuth session; server components can call API with it.
+* **Admin page**: `/admin` performs server-side fetch to `/api/orgs` using your JWT.
+* **Edge routing:** `/api/auth/*` is routed to the **web** app; other `/api/*` to the **API**.
+* **Quick verify:**
+
+  1. Open `http://localhost:8080/signin`
+  2. Login with `admin@acme.test / admin123!`
+  3. Visit `http://localhost:8080/admin` → you should see your orgs JSON.
 
 ---
 
 ## Project structure
+
 ```
 LaunchPad/
 ├─ apps/
@@ -96,17 +99,24 @@ LaunchPad/
 │  │  └─ tsconfig.json
 │  └─ web/                 # Next.js app
 │     ├─ src/app/
+│     │  ├─ api/auth/[...nextauth]/route.ts
+│     │  ├─ admin/page.tsx
+│     │  ├─ signin/page.tsx
+│     │  ├─ layout.tsx
+│     │  └─ page.tsx
+│     ├─ src/components/providers.tsx
+│     ├─ src/lib/auth.ts
 │     ├─ Dockerfile
 │     ├─ package.json
 │     └─ tsconfig.json
-├─ edge/                   # Nginx reverse proxy (rate limiting, passive CB)
+├─ edge/
 │  ├─ Dockerfile
 │  ├─ entrypoint.sh
-│  └─ nginx.conf.template
+│  └─ nginx.conf.template   # routes /api/auth/* -> web, others /api/* -> api
 ├─ infra/
 │  ├─ grafana/provisioning/datasources/datasource.yml
 │  ├─ postgres/init/001_init.sql
-│  ├─ postgres/init/002_schema.sql        # <-- M1a schema + seed
+│  ├─ postgres/init/002_schema.sql        # M1a schema + seed
 │  ├─ otel-collector.yaml
 │  └─ prometheus.yml
 ├─ .github/workflows/ci.yml
@@ -121,72 +131,77 @@ LaunchPad/
 ---
 
 ## Environment
-The `.env.example` file configures ports and credentials. Copy it once per fresh clone:
+
+Copy once per fresh clone:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
 Key variables:
-- `ACTIVE_COLOR=blue|green` – which color the **edge** routes to.
-- `POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB` – dev credentials.
-- `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` – trace export.
-- `API_OTEL_PROM_PORT=9464` – API metrics scrape port.
-- `JWT_SECRET` – HMAC secret for JWTs (default in `.env.example` is dev-only).
+
+* `ACTIVE_COLOR=blue|green` – which color edge routes to.
+* `POSTGRES_*` – dev DB credentials.
+* `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` – traces.
+* `API_OTEL_PROM_PORT=9464` – API metrics.
+* `JWT_SECRET` – HMAC secret for API JWTs.
+* `NEXTAUTH_SECRET`, `NEXTAUTH_URL=http://localhost:8080` – NextAuth.
+* `API_INTERNAL_URL` (in web services) – `http://api-blue:3001` / `http://api-green:3001`.
 
 ---
 
 ## CI (GitHub Actions)
+
 Workflow: `.github/workflows/ci.yml`
 
 What it does:
+
 1. Checks out the repo.
 2. Copies `.env.example` → `.env`.
-3. Builds and starts the Docker stack in CI.
-4. Polls `http://localhost:8080/api/health` until healthy (or fails and prints logs).
+3. Builds and starts the Docker stack.
+4. Polls `http://localhost:8080/api/health` until healthy (or fails with logs).
 
 Triggers: **push to `main`** and **pull requests**.
-
-> Later milestones will add test jobs (Jest/Playwright), Docker image caching, and blue/green deploy gating.
-
----
-
-## Services included (M1a)
-- **edge** – Nginx reverse proxy, **rate limiting** (10 r/s burst 20) and **passive circuit breaker** via `proxy_next_upstream`.
-- **web-blue/green** – Next.js app (Dockerized).
-- **api-blue/green** – NestJS API (`/health`, `/auth/login`, `/me`, `/orgs`) with **OpenTelemetry traces** + **Prometheus metrics**.
-- **postgres** – Postgres 16 with extensions (`uuid-ossp`, `pgcrypto`), **RLS policies** and **seed data**.
-- **redis** – Redis 7 (future: rate-limit tokens, queues, cache).
-- **otel-collector** – Receives traces via OTLP HTTP (4318), logs to console.
-- **prometheus** – Scrapes API Prometheus exporter (port 9464).
-- **grafana** – Pre-provisioned Prometheus datasource (login: `admin`/`admin`).
-- **maildev** – Local email (UI :1080, SMTP :1025) for invites in later milestones.
 
 ---
 
 ## Troubleshooting
-Common checks:
+
 ```powershell
 docker compose ps
 docker compose logs edge -n 100
 docker compose logs api-blue -n 100
+docker compose logs web-blue -n 150
 ```
 
-- **401 from /me or /orgs** → make sure you included the `Authorization: Bearer <token>` header; re-login to refresh the token.
-- **500 from /orgs** → ensure `infra/postgres/init/002_schema.sql` exists and that `db.ts` uses `set_config('app.tenant_id', $1, true)` (not `SET LOCAL ... $1`).
-- **WSL/Docker issues on Windows** → ensure Docker Desktop is **Running** and WSL2 is installed (`wsl --status`).
+* **404 at `/api/auth/*`** → ensure `nginx.conf.template` routes `/api/auth/` to `web_upstream` and uses `proxy_pass http://web_upstream$request_uri;`.
+* **500 from `/api/orgs`** → make sure `db.ts` uses `set_config('app.tenant_id', $1, true)` (not `SET LOCAL ... $1`).
+* **Edge “host not found”** → rebuild edge to strip CRLF, and ensure health-gated `depends_on` is set.
 
 ---
 
 ## Roadmap
-- **M1b:** Auth.js (NextAuth) Email provider via MailDev + Next.js UI login, session ↔ JWT bridge, minimal admin console page.
-- **M2:** RBAC + audit logging middleware.
-- **M3:** Stripe (test) billing, **idempotent webhooks**, feature flags.
-- **M4:** SLOs (P95 latency, error rate) with Prometheus **recording rules** and Grafana dashboards.
-- **M5:** Zero-downtime **blue/green deploy** via GitHub Actions with health gates and migration safety checks.
-- **M6:** Hardening (pagination, optimistic concurrency, edge rate limiting & circuit breakers), Jest/Playwright tests.
+
+* **M2:** RBAC + audit logging middleware.
+* **M3:** Stripe (test) billing, idempotent webhooks, feature flags.
+* **M4:** SLOs (P95 latency, error rate) with Prometheus recording rules and Grafana dashboards.
+* **M5:** Zero-downtime blue/green deploy via GitHub Actions with health/migration gates.
+* **M6:** Hardening (pagination, optimistic concurrency, edge rate limiting & circuit breakers), Jest/Playwright tests.
 
 ---
 
 ## License
-This project is licensed under the **MIT License**. See `LICENSE` for details.
+
+MIT — see `LICENSE`.
+
+---
+
+### Commit this update
+
+```powershell
+git add README.md
+git commit -m "Docs: progress log through M1b (Auth.js UI + admin) and updated structure/env"
+git push origin main
+```
+
+When you’re ready, I’ll move us into **M2 (RBAC + audit logs)** using the same copy-paste, first-try-green approach.
