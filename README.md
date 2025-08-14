@@ -4,14 +4,14 @@
 
 A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**, **NestJS (API)**, **Postgres**, **Redis**, **Nginx edge**, and **Observability** (OpenTelemetry → Collector, Prometheus, Grafana). Fully containerized for **Windows + VSCode** with **Docker only** (no Node or pnpm required on host).
 
-> This README covers the **M0 bootable skeleton**. Upcoming milestones (M1+) will add multitenancy (RLS), Auth.js, Stripe (test), admin console, SLOs, and blue/green deploy automation in GitHub Actions.
+> **This README documents M1a** (after M0). What’s included now: **multitenancy schema**, **Postgres RLS**, **seeded demo tenant**, **JWT login**, and **tenant-scoped APIs** (`/api/me`, `/api/orgs`).
 
 ---
 
 ## Run in 60 seconds (Windows PowerShell)
 ```powershell
 Copy-Item .env.example .env
-docker compose up --build
+docker compose up --build -d
 ```
 
 ### Open these in your browser
@@ -41,12 +41,56 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting the `edge` service.
 
 ---
 
+## What’s new in **M1a**
+- **Postgres schema**: tenants, users, orgs, memberships.
+- **Row Level Security (RLS)**: enforced via per-request GUCs (`app.tenant_id`, `app.user_id`) so queries are **tenant-scoped** automatically.
+- **Seeded demo data**: tenant `Acme`, org `Acme HQ`, admin user `admin@acme.test` / `admin123!`.
+- **JWT auth**:
+  - `POST /api/auth/login` → `{ token }` (HS256; 1d).
+  - `GET /api/me` (JWT) → user + tenant ids.
+  - `GET /api/orgs` (JWT) → orgs visible to the logged-in tenant (RLS enforced).
+
+---
+
+## API Quick Verify (PowerShell)
+```powershell
+# 1) Login to obtain a JWT
+$body = @{ email = "admin@acme.test"; password = "admin123!" } | ConvertTo-Json
+$login = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/auth/login -ContentType "application/json" -Body $body
+$token = $login.token
+
+# 2) Inspect your identity
+Invoke-RestMethod -Uri http://localhost:8080/api/me -Headers @{ Authorization = "Bearer $token" }
+
+# 3) List orgs for your tenant (RLS applied)
+Invoke-RestMethod -Uri http://localhost:8080/api/orgs -Headers @{ Authorization = "Bearer $token" }
+```
+**Demo creds:** `admin@acme.test` / `admin123!`
+
+Equivalent with `curl`:
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/auth/login   -H "content-type: application/json"   -d '{"email":"admin@acme.test","password":"admin123!"}' | jq -r .token)
+
+curl -s http://localhost:8080/api/me   -H "authorization: Bearer $TOKEN" | jq
+curl -s http://localhost:8080/api/orgs -H "authorization: Bearer $TOKEN" | jq
+```
+
+---
+
 ## Project structure
 ```
 LaunchPad/
 ├─ apps/
-│  ├─ api/                 # NestJS API (health + OTEL)
+│  ├─ api/                 # NestJS API (health, auth, me, orgs, OTEL)
 │  │  ├─ src/
+│  │  │  ├─ app.module.ts
+│  │  │  ├─ auth.controller.ts
+│  │  │  ├─ db.ts
+│  │  │  ├─ health.controller.ts
+│  │  │  ├─ jwt.guard.ts
+│  │  │  ├─ me.controller.ts
+│  │  │  ├─ orgs.controller.ts
+│  │  │  └─ otel.ts
 │  │  ├─ Dockerfile
 │  │  ├─ package.json
 │  │  └─ tsconfig.json
@@ -62,6 +106,7 @@ LaunchPad/
 ├─ infra/
 │  ├─ grafana/provisioning/datasources/datasource.yml
 │  ├─ postgres/init/001_init.sql
+│  ├─ postgres/init/002_schema.sql        # <-- M1a schema + seed
 │  ├─ otel-collector.yaml
 │  └─ prometheus.yml
 ├─ .github/workflows/ci.yml
@@ -72,6 +117,22 @@ LaunchPad/
 ├─ LICENSE  (MIT)
 └─ README.md
 ```
+
+---
+
+## Environment
+The `.env.example` file configures ports and credentials. Copy it once per fresh clone:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Key variables:
+- `ACTIVE_COLOR=blue|green` – which color the **edge** routes to.
+- `POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB` – dev credentials.
+- `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` – trace export.
+- `API_OTEL_PROM_PORT=9464` – API metrics scrape port.
+- `JWT_SECRET` – HMAC secret for JWTs (default in `.env.example` is dev-only).
 
 ---
 
@@ -90,31 +151,16 @@ Triggers: **push to `main`** and **pull requests**.
 
 ---
 
-## Services included (M0)
+## Services included (M1a)
 - **edge** – Nginx reverse proxy, **rate limiting** (10 r/s burst 20) and **passive circuit breaker** via `proxy_next_upstream`.
 - **web-blue/green** – Next.js app (Dockerized).
-- **api-blue/green** – NestJS API with `/health` and OpenTelemetry (traces + Prometheus metrics).
-- **postgres** – Postgres 16 with base extensions (`uuid-ossp`, `pgcrypto`).
+- **api-blue/green** – NestJS API (`/health`, `/auth/login`, `/me`, `/orgs`) with **OpenTelemetry traces** + **Prometheus metrics**.
+- **postgres** – Postgres 16 with extensions (`uuid-ossp`, `pgcrypto`), **RLS policies** and **seed data**.
 - **redis** – Redis 7 (future: rate-limit tokens, queues, cache).
-- **otel-collector** – Receives traces via OTLP HTTP (4318), logs to console (M0).
+- **otel-collector** – Receives traces via OTLP HTTP (4318), logs to console.
 - **prometheus** – Scrapes API Prometheus exporter (port 9464).
 - **grafana** – Pre-provisioned Prometheus datasource (login: `admin`/`admin`).
 - **maildev** – Local email (UI :1080, SMTP :1025) for invites in later milestones.
-
----
-
-## Environment
-The `.env.example` file configures ports and credentials. Copy it once per fresh clone:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Key variables:
-- `ACTIVE_COLOR=blue|green` – which color the **edge** routes to.
-- `POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB` – dev credentials.
-- `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` – trace export.
-- `API_OTEL_PROM_PORT=9464` – API metrics scrape port.
 
 ---
 
@@ -126,19 +172,19 @@ docker compose logs edge -n 100
 docker compose logs api-blue -n 100
 ```
 
-- **`edge` up but pages 502/504:** The target service may still be starting. Wait and refresh, or check `api-blue`/`web-blue` logs.
-- **Port already in use:** Stop previous stacks: `docker compose down` or free the port (8080, 9090, 3002, 1080, 1025, 5432, 6379).
-- **WSL/Docker issues on Windows:** Ensure Docker Desktop is **Running** and WSL 2 is installed (`wsl --status`).
+- **401 from /me or /orgs** → make sure you included the `Authorization: Bearer <token>` header; re-login to refresh the token.
+- **500 from /orgs** → ensure `infra/postgres/init/002_schema.sql` exists and that `db.ts` uses `set_config('app.tenant_id', $1, true)` (not `SET LOCAL ... $1`).
+- **WSL/Docker issues on Windows** → ensure Docker Desktop is **Running** and WSL2 is installed (`wsl --status`).
 
 ---
 
-## Roadmap (next milestones)
-- **M1:** Multitenancy schema + **Postgres RLS**, JWT, **Auth.js (email via MailDev)**, seeded demo tenant, admin console.
+## Roadmap
+- **M1b:** Auth.js (NextAuth) Email provider via MailDev + Next.js UI login, session ↔ JWT bridge, minimal admin console page.
 - **M2:** RBAC + audit logging middleware.
-- **M3:** **Stripe (test mode)** billing, idempotent webhooks, feature flags.
+- **M3:** Stripe (test) billing, **idempotent webhooks**, feature flags.
 - **M4:** SLOs (P95 latency, error rate) with Prometheus **recording rules** and Grafana dashboards.
 - **M5:** Zero-downtime **blue/green deploy** via GitHub Actions with health gates and migration safety checks.
-- **M6:** Hardening (pagination, optimistic concurrency, rate limiting, circuit breakers), Jest/Playwright tests.
+- **M6:** Hardening (pagination, optimistic concurrency, edge rate limiting & circuit breakers), Jest/Playwright tests.
 
 ---
 
