@@ -26,6 +26,13 @@ http {
   server {
     listen 8080;
 
+    # ---- NextAuth lives in the Web app (NOT the API) ----
+    location /api/auth/ {
+      proxy_pass http://web_upstream$request_uri;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
     location /api/ {
       limit_req zone=api_rl burst=20 nodelay;
       proxy_pass http://api_upstream/;

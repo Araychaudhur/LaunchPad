@@ -134,6 +134,9 @@ services:
       - NODE_ENV=production
       - PORT=${WEB_PORT}
       - NEXT_PUBLIC_APP_NAME=${NEXT_PUBLIC_APP_NAME}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - API_INTERNAL_URL=http://api-blue:3001 
     expose: ["3000"]
     depends_on:
       api-blue:
@@ -157,6 +160,9 @@ services:
       - NODE_ENV=production
       - PORT=${WEB_PORT}
       - NEXT_PUBLIC_APP_NAME=${NEXT_PUBLIC_APP_NAME}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - API_INTERNAL_URL=http://api-green:3001
     expose: ["3000"]
     profiles: ["green"]
     depends_on:
