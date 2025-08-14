@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: "api-blue"
+    static_configs:
+      - targets: ["api-blue:9464"]
+  - job_name: "api-green"
+    static_configs:
+      - targets: ["api-green:9464"]
