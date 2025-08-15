@@ -1,6 +1,6 @@
 # LaunchPad – Multi-tenant SaaS Skeleton (Docker-first)
 
-![ci](https://github.com/Araychaudhuri/LaunchPad/actions/workflows/ci.yml/badge.svg?branch=main)
+![ci](https://github.com/Araychaudhur/LaunchPad/actions/workflows/ci.yml/badge.svg?branch=main)
 
 A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**, **NestJS (API)**, **Postgres**, **Redis**, **Nginx edge**, and **Observability** (OpenTelemetry → Collector, Prometheus, Grafana). Fully containerized for **Windows + VSCode** with **Docker only**.
 
