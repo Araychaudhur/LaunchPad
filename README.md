@@ -83,6 +83,39 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 * New **/admin/profile** page (renders `/api/me` payload).
 * Cleaner **/admin** layout with simple nav (Orgs / Profile / Home).
 
+### ✅ M2 — RBAC + Audit Logs
+- **RBAC guard**: `RequireTenantRole('ADMIN','OWNER')` checks tenant role via memberships.
+- **Audit logs** table with RLS; helper writes `{ action, resource, resource_id, meta }`.
+- **Endpoints**:
+  - `POST /api/orgs` – create org (requires ADMIN/OWNER) and writes `org.create` audit.
+  - `GET  /api/audit-logs` – list recent audit events (ADMIN/OWNER).
+- **Seeded user**: `member@acme.test` / `member123!` (role: MEMBER) to validate deny paths.
+- **Edge routing note**: exact match routes `/api/auth/login` → API; all other `/api/auth/*` → Web (NextAuth).
+- **Quick verify (PowerShell)**:
+  ```powershell
+  # Admin can create org
+  $admin = (Invoke-RestMethod -Method Post http://localhost:8080/api/auth/login `
+    -ContentType application/json `
+    -Body (@{ email="admin@acme.test"; password="admin123!" } | ConvertTo-Json)).token
+
+  Invoke-RestMethod -Method Post http://localhost:8080/api/orgs `
+    -Headers @{ Authorization = "Bearer $admin" } `
+    -ContentType application/json -Body '{"name":"Acme Lab"}'
+
+  Invoke-RestMethod http://localhost:8080/api/audit-logs -Headers @{ Authorization = "Bearer $admin" }
+
+  # Member is denied (403)
+  $member = (Invoke-RestMethod -Method Post http://localhost:8080/api/auth/login `
+    -ContentType application/json `
+    -Body (@{ email="member@acme.test"; password="member123!" } | ConvertTo-Json)).token
+
+  try {
+    Invoke-RestMethod -Method Post http://localhost:8080/api/orgs `
+      -Headers @{ Authorization = "Bearer $member" } `
+      -ContentType application/json -Body '{"name":"Should Fail"}'
+  } catch { $_.Exception.Message } # expect 403
+
+
 ---
 
 ## Project structure (key parts)
@@ -176,12 +209,3 @@ docker compose logs web-blue -n 150
 ## License
 
 MIT — see `LICENSE`.
-
-````
-
-### Commit & push
-```powershell
-git add README.md
-git commit -m "Docs: progress log through M1c (UI polish: layout, profile, apiFetch)"
-git push origin main
-````
