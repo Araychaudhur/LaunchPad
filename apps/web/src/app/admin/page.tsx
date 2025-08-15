@@ -1,30 +1,27 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../lib/auth";
+import { redirect } from "next/navigation";
+import { apiFetch } from "../../lib/api";
+
+type Org = { id: string; name: string };
 
 export default async function AdminPage() {
   const session = await getServerSession(authOptions);
   const token = (session as any)?.apiToken as string | undefined;
+  if (!token) redirect("/signin?callbackUrl=/admin");
 
-  if (!token) {
-    return (
-      <main style={{ fontFamily: "sans-serif", padding: 24 }}>
-        <h1>Admin</h1>
-        <p>You are not signed in. <a href="/signin">Sign in</a></p>
-      </main>
-    );
-  }
-
-  const res = await fetch(`${process.env.API_INTERNAL_URL}/orgs`, {
-    headers: { Authorization: `Bearer ${token}` },
-    cache: "no-store"
-  });
-  const orgs = await res.json();
+  const orgs = await apiFetch<Org[]>("/orgs");
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: 24 }}>
-      <h1>Admin</h1>
+    <main>
       <h2>Your orgs</h2>
-      <pre>{JSON.stringify(orgs, null, 2)}</pre>
+      <ul>
+        {orgs.map((o) => (
+          <li key={o.id}>
+            <code>{o.name}</code> <small style={{ opacity: 0.6 }}>({o.id})</small>
+          </li>
+        ))}
+      </ul>
     </main>
   );
 }
