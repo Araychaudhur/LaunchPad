@@ -1,0 +1,20 @@
+groups:
+  - name: launchpad_slos
+    rules:
+      # P95 (unchanged)
+      - record: slo:http_request_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+      # Error-rate over 5m — emit 0 when there are no 5xx
+      - record: sli:http_error_rate:ratio:5m
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            or on() vector(0)
+          )
+          /
+          clamp_min(sum(rate(http_requests_total[5m])), 1e-9)

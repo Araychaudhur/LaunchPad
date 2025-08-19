@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
+import { metricsMiddleware, attachMetricsEndpoint } from "./metrics";
 
 async function bootstrap() {
   // Start telemetry, but never crash API if it fails
@@ -13,6 +14,10 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, { logger: ["log", "error", "warn"] });
   app.enableShutdownHooks();
+
+  // Metrics
+  app.use(metricsMiddleware);
+  attachMetricsEndpoint(app);
 
   const port = Number(process.env.PORT || 3001);
   await app.listen(port);

@@ -47,6 +47,7 @@ services:
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     volumes:
       - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus.rules.yml:/etc/prometheus/recording-rules.yml:ro
     ports: ["9090:9090"]
     networks: [app-net]
 
@@ -58,6 +59,7 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards
     depends_on: [prometheus]
     networks: [app-net]
 

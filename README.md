@@ -115,6 +115,16 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
       -ContentType application/json -Body '{"name":"Should Fail"}'
   } catch { $_.Exception.Message } # expect 403
 
+### ✅ M2b — SLOs (P95 latency & error rate)
+- API exposes Prometheus metrics (`/metrics`) with histogram (`http_request_duration_seconds`) and counter (`http_requests_total`).
+- Prometheus recording rules:
+  - `slo:http_request_duration_seconds:p95:5m`
+  - `sli:http_error_rate:ratio:5m`
+- Grafana dashboard **“LaunchPad SLOs”** visualizes both over time.
+- Quick verify:
+  ```powershell
+  1..50 | % { Invoke-RestMethod http://localhost:8080/api/health -ErrorAction SilentlyContinue | Out-Null; Start-Sleep -Milliseconds 200 }
+
 
 ---
 
