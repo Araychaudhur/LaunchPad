@@ -9,6 +9,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
           <Link href="/admin">Orgs</Link>
           <Link href="/admin/profile">Profile</Link>
           <Link href="/">Home</Link>
+          <Link href="/billing">Billing</Link>
         </nav>
       </header>
       <hr style={{ margin: "12px 0 24px" }} />

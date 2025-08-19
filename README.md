@@ -84,6 +84,7 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 * Cleaner **/admin** layout with simple nav (Orgs / Profile / Home).
 
 ### ✅ M2 — RBAC + Audit Logs
+
 - **RBAC guard**: `RequireTenantRole('ADMIN','OWNER')` checks tenant role via memberships.
 - **Audit logs** table with RLS; helper writes `{ action, resource, resource_id, meta }`.
 - **Endpoints**:
@@ -116,6 +117,7 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
   } catch { $_.Exception.Message } # expect 403
 
 ### ✅ M2b — SLOs (P95 latency & error rate)
+
 - API exposes Prometheus metrics (`/metrics`) with histogram (`http_request_duration_seconds`) and counter (`http_requests_total`).
 - Prometheus recording rules:
   - `slo:http_request_duration_seconds:p95:5m`
@@ -125,7 +127,117 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
   ```powershell
   1..50 | % { Invoke-RestMethod http://localhost:8080/api/health -ErrorAction SilentlyContinue | Out-Null; Start-Sleep -Milliseconds 200 }
 
+### ✅ M3 — Billing (Stripe test mode) + Idempotent Webhooks + Feature Flags
 
+**What shipped**
+
+* **DB** (keeps existing data):
+  `billing_customers`, `subscriptions`, `processed_events` *(idempotency ledger)*, `feature_flags` (tenant-scoped).
+  RLS on tenant tables; `processed_events` is global.
+* **API**
+
+  * `POST /api/billing/checkout` → creates Stripe **Checkout Session** (JWT required)
+  * `GET  /api/billing/status` → returns `{ subscription, flags:{ premium } }` (JWT required)
+  * `POST /api/webhooks/stripe` → handles events; **idempotent** via `processed_events`
+* **Edge/Nginx**: special route `= /api/webhooks/stripe` (no rate-limit) to API.
+* **Web**: `/billing` page (requires login). Shows Premium flag + subscription id and has **Subscribe (test mode)** button.
+
+---
+
+#### Required env (test mode)
+
+Add to `.env` (not `.env.example`):
+
+```env
+APP_URL=http://localhost:8080
+STRIPE_SECRET_KEY=sk_test_xxx          # Stripe Dashboard → Developers → API keys
+STRIPE_PRICE_ID=price_xxx              # Products → your test product price
+STRIPE_WEBHOOK_SECRET=whsec_xxx        # from Stripe CLI (see below). Leave blank only if simulating.
+```
+
+> After editing:
+> `docker compose up -d --force-recreate api-blue`
+
+---
+
+#### Webhooks (dev) — Stripe CLI **must be running**
+
+```powershell
+# one-time install/login
+winget install Stripe.StripeCLI
+stripe login
+
+# run listener (keep this window open)
+stripe listen --forward-to localhost:8080/api/webhooks/stripe
+```
+
+Copy the printed **`whsec_…`**, place it in `.env` as `STRIPE_WEBHOOK_SECRET`, then restart API:
+
+```powershell
+docker compose up -d --force-recreate api-blue
+```
+
+> Note: every time you restart `stripe listen`, the **whsec** changes. Update `.env` and force-recreate the API.
+
+---
+
+#### Quick verify (UI path)
+
+1. Open `http://localhost:8080/billing` → sign in if prompted.
+2. Click **Subscribe (test mode)** → Stripe page → pay with `4242 4242 4242 4242` (any future date/CVC/ZIP).
+3. Watch the Stripe CLI window for `checkout.session.completed` / `customer.subscription.*` with **200**.
+4. Refresh `/billing` → **Premium: ON** and subscription id visible.
+
+---
+
+#### Quick verify (API path)
+
+```powershell
+# Login
+$tok = (Invoke-RestMethod -Method Post http://localhost:8080/api/auth/login `
+  -ContentType application/json `
+  -Body (@{ email="admin@acme.test"; password="admin123!" } | ConvertTo-Json)).token
+
+# Create checkout session (returns long URL)
+$resp = Invoke-RestMethod -Method Post http://localhost:8080/api/billing/checkout `
+  -Headers @{ Authorization = "Bearer $tok" }
+$resp | ConvertTo-Json -Depth 5
+Start-Process $resp.url
+
+# After successful payment + webhook delivery
+Invoke-RestMethod http://localhost:8080/api/billing/status `
+  -Headers @{ Authorization = "Bearer $tok" }
+# → subscription row + flags.premium = true
+```
+
+---
+
+#### Troubleshooting
+
+* **Stripe page says “Something went wrong”** → URL was truncated. Use:
+
+  ```powershell
+  $resp.url | Set-Clipboard; Start-Process $resp.url
+  ```
+* **/billing shows 401 or “Failed to load status”** → sign in again; the page auto-redirects on 401.
+* **Premium stays OFF** → ensure Stripe CLI is running, `STRIPE_WEBHOOK_SECRET` matches current listener, and API was force-recreated.
+  Inspect:
+
+  ```powershell
+  docker compose logs api-blue -n 200 | Select-String stripe
+  ```
+* **Edge 503 during load tests** → rate-limit was hit; slow the loop or exempt `/api/health` in nginx.
+
+---
+
+#### (If you need to re-apply the M3 migration manually)
+
+```powershell
+$u = (Select-String -Path .env -Pattern '^POSTGRES_USER=').Line.Split('=')[1]
+$db = (Select-String -Path .env -Pattern '^POSTGRES_DB=').Line.Split('=')[1]
+docker compose cp infra/postgres/init/004_billing.sql postgres:/tmp/004_billing.sql
+docker compose exec -T postgres psql -U $u -d $db -v ON_ERROR_STOP=1 -f /tmp/004_billing.sql
+```
 ---
 
 ## Project structure (key parts)

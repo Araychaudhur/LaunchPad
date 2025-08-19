@@ -1,4 +1,5 @@
 import "reflect-metadata";
+import * as bodyParser from "body-parser";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { metricsMiddleware, attachMetricsEndpoint } from "./metrics";
@@ -14,6 +15,8 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, { logger: ["log", "error", "warn"] });
   app.enableShutdownHooks();
+
+  app.use("/webhooks/stripe", bodyParser.raw({ type: "application/json" }));
 
   // Metrics
   app.use(metricsMiddleware);
