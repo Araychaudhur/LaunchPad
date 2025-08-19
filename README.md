@@ -129,8 +129,6 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 
 ### ✅ M3 — Billing (Stripe test mode) + Idempotent Webhooks + Feature Flags
 
-**What shipped**
-
 * **DB** (keeps existing data):
   `billing_customers`, `subscriptions`, `processed_events` *(idempotency ledger)*, `feature_flags` (tenant-scoped).
   RLS on tenant tables; `processed_events` is global.
@@ -320,8 +318,7 @@ docker compose logs web-blue -n 150
 
 ## Roadmap
 
-* **M2:** RBAC + audit logging middleware.
-* **M3:** Stripe (test) billing, idempotent webhooks, feature flags.
+* **M3b:** Stripe (test) billing, idempotent webhooks, feature flags (Polish).
 * **M4:** SLOs (P95 latency, error rate) with Prometheus recording rules and Grafana dashboards.
 * **M5:** Zero-downtime blue/green deploy via GitHub Actions with health/migration gates.
 * **M6:** Hardening (pagination, optimistic concurrency, edge rate limiting & circuit breakers), Jest/Playwright tests.
