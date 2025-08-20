@@ -13,7 +13,10 @@ export class BillingController {
     const { tenantId, userId } = req.user!;
     return await withTenantClient(tenantId, userId, async (c) => {
       const sub = await c.query(
-        "select stripe_subscription_id, status, current_period_end from subscriptions order by updated_at desc limit 1"
+        `select stripe_subscription_id, status, current_period_end,
+                cancel_at_period_end, cancel_at, canceled_at
+           from subscriptions
+          order by updated_at desc limit 1`
       );
       const flags = await c.query("select premium from feature_flags");
       return { subscription: sub.rows[0] ?? null, flags: flags.rows[0] ?? { premium: false } };
@@ -21,7 +24,7 @@ export class BillingController {
   }
 
   @Post("checkout")
-  async checkout(@Req() req: any, @Body() body: any) {
+  async checkout(@Req() req: any, @Body() _body: any) {
     const { tenantId, userId } = req.user!;
     const priceId = process.env.STRIPE_PRICE_ID;
     const appUrl = process.env.APP_URL;
@@ -48,5 +51,20 @@ export class BillingController {
     });
 
     return { url: session.url };
+  }
+
+  @Post("portal")
+  async portal(@Req() req: any) {
+    const { tenantId, userId } = req.user!;
+    const appUrl = process.env.APP_URL || "http://localhost:8080";
+    return await withTenantClient(tenantId, userId, async (c) => {
+      const r = await c.query("select stripe_customer_id from billing_customers limit 1");
+      if (!r.rows[0]) return { error: "Customer not found. Start a checkout first." };
+      const session = await stripe.billingPortal.sessions.create({
+        customer: r.rows[0].stripe_customer_id,
+        return_url: `${appUrl}/billing`,
+      });
+      return { url: session.url };
+    });
   }
 }

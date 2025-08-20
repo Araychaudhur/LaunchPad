@@ -140,6 +140,32 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 * **Edge/Nginx**: special route `= /api/webhooks/stripe` (no rate-limit) to API.
 * **Web**: `/billing` page (requires login). Shows Premium flag + subscription id and has **Subscribe (test mode)** button.
 
+### ✅ M3b — Customer Portal + Cancellation messaging (polish)
+
+**What changed**
+- Added **Stripe Customer Portal** button on `/billing`.
+- Webhook now refreshes subscription details and records:
+  - `cancel_at_period_end`, `cancel_at`, `canceled_at`, `current_period_end`
+- UI messaging on `/billing`:
+  - **Renews on …** (active)
+  - **Will be canceled on …** (cancel at period end)
+  - **Canceled on …** (fully canceled)
+- `/premium` remains feature-gated by `feature_flags.premium`.
+
+**Dev notes**
+- Keep Stripe CLI running in dev:
+  ```powershell
+  stripe listen --forward-to localhost:8080/api/webhooks/stripe
+  # put the printed whsec_... into .env as STRIPE_WEBHOOK_SECRET
+  docker compose up -d --force-recreate api-blue
+
+* Test:
+
+  1. `/billing` → **Manage billing (portal)** → cancel at period end.
+  2. See `customer.subscription.updated` forwarded (HTTP 200) in CLI.
+  3. Refresh `/billing` → **Will be canceled on …**.
+  4. Undo cancel → message switches back to **Renews on …**.
+
 ---
 
 #### Required env (test mode)

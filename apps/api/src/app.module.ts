@@ -7,6 +7,7 @@ import { AuditController } from "./audit.controller";
 import { BillingController } from "./billing.controller";
 import { StripeWebhookController } from "./stripe.webhook.controller";
 import { RolesGuard } from "./rbac";
+import { PremiumController } from "./premium.controller";
 
 @Module({
   controllers: [
@@ -16,7 +17,8 @@ import { RolesGuard } from "./rbac";
     MeController,
     AuditController,
     BillingController,
-    StripeWebhookController
+    StripeWebhookController,
+    PremiumController
   ],
   providers: [RolesGuard]
 })
