@@ -166,6 +166,33 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
   3. Refresh `/billing` → **Will be canceled on …**.
   4. Undo cancel → message switches back to **Renews on …**.
 
+### ✅ M4 — Zero-downtime Blue/Green deploys (GHCR + Docker Compose)
+
+**Pipeline**
+- GitHub Actions builds & pushes:
+  - `ghcr.io/<owner>/<repo>-api:<sha>` (+ `:latest`)
+  - `ghcr.io/<owner>/<repo>-web:<sha>` (+ `:latest`)
+
+**Local deploy (zero-downtime)**
+- Start **green** next to **blue** with new images
+- Health-check green (`/api/health` and web `/`)
+- (Optional) run DB migrations when green is healthy
+- Flip traffic by reloading `edge` with `ACTIVE_COLOR=green`
+- One-command rollback to blue
+
+**Commands**
+```powershell
+# Deploy green
+./scripts/deploy.ps1 -Color green `
+  -ApiImage ghcr.io/<owner>/<repo>-api:<sha> `
+  -WebImage ghcr.io/<owner>/<repo>-web:<sha>
+
+# Optional migrations
+./scripts/deploy.ps1 -Color green -ApiImage ... -WebImage ... -RunMigrations
+
+# Rollback
+./scripts/rollback.ps1 -ToColor blue
+
 ---
 
 #### Required env (test mode)
@@ -344,8 +371,7 @@ docker compose logs web-blue -n 150
 
 ## Roadmap
 
-* **M3b:** Stripe (test) billing, idempotent webhooks, feature flags (Polish).
-* **M4:** SLOs (P95 latency, error rate) with Prometheus recording rules and Grafana dashboards.
+* **M4b:** A tiny **post-switch smoke test** (e2e ping + roll back automatically on failure)
 * **M5:** Zero-downtime blue/green deploy via GitHub Actions with health/migration gates.
 * **M6:** Hardening (pagination, optimistic concurrency, edge rate limiting & circuit breakers), Jest/Playwright tests.
 

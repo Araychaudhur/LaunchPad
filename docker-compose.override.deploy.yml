@@ -1,14 +1,6 @@
 services:
-  # When deploying GREEN, we override green services to run the pushed images.
   api-green:
     image: ${API_IMAGE_GREEN}
-    build: # disable build
-      context: .
-      dockerfile: Dockerfile.dummy
-    # everything else (env, depends_on, networks) comes from base compose
-
   web-green:
     image: ${WEB_IMAGE_GREEN}
-    build:
-      context: .
-      dockerfile: Dockerfile.dummy
+
