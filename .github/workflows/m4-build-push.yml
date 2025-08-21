@@ -2,19 +2,12 @@ name: M4 - Build & Push Images (GHCR)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   workflow_dispatch: {}
 
 permissions:
   contents: read
   packages: write
-
-env:
-  REGISTRY: ghcr.io
-  REPO_OWNER: ${{ github.repository_owner }}
-  REPO_NAME: ${{ github.event.repository.name }}
-  IMAGE_API: ${{ env.REGISTRY }}/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}-api:${{ github.sha }}
-  IMAGE_WEB: ${{ env.REGISTRY }}/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}-web:${{ github.sha }}
 
 jobs:
   build-push:
@@ -28,6 +21,19 @@ jobs:
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
+
+      # Compute lower-case image names that always work (push or dispatch)
+      - name: Compute image tags
+        id: tags
+        shell: bash
+        run: |
+          REPO_LOWER="${GITHUB_REPOSITORY,,}"           # owner/name (lowercase)
+          SHA="$GITHUB_SHA"
+
+          echo "IMAGE_API=ghcr.io/${REPO_LOWER}-api:${SHA}"       >> $GITHUB_ENV
+          echo "IMAGE_WEB=ghcr.io/${REPO_LOWER}-web:${SHA}"       >> $GITHUB_ENV
+          echo "IMAGE_API_LATEST=ghcr.io/${REPO_LOWER}-api:latest" >> $GITHUB_ENV
+          echo "IMAGE_WEB_LATEST=ghcr.io/${REPO_LOWER}-web:latest" >> $GITHUB_ENV
 
       - name: Login to GHCR
         uses: docker/login-action@v3
@@ -44,7 +50,7 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE_API }}
-            ${{ env.REGISTRY }}/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}-api:latest
+            ${{ env.IMAGE_API_LATEST }}
 
       - name: Build & push Web
         uses: docker/build-push-action@v5
@@ -54,9 +60,9 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE_WEB }}
-            ${{ env.REGISTRY }}/${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}-web:latest
+            ${{ env.IMAGE_WEB_LATEST }}
 
-      - name: Output image tags
+      - name: Show tags
         run: |
-          echo "IMAGE_API=${IMAGE_API}"
-          echo "IMAGE_WEB=${IMAGE_WEB}"
+          echo "::notice title=API::${IMAGE_API}"
+          echo "::notice title=WEB::${IMAGE_WEB}"
