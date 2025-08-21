@@ -3,4 +3,3 @@ services:
     image: ${API_IMAGE_GREEN}
   web-green:
     image: ${WEB_IMAGE_GREEN}
-

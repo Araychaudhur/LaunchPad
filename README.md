@@ -193,6 +193,21 @@ Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 # Rollback
 ./scripts/rollback.ps1 -ToColor blue
 
+### ✅ M4b — Post-switch smoke test & auto confidence
+- `scripts/deploy.ps1` deploys GREEN, flips edge, and (optionally) runs `scripts/smoke.ps1`.
+- Smoke checks `/api/health` and `/` via the edge (http://localhost:8080).
+- Rollback script still available for manual flips.
+
+**Deploy with smoke**
+```powershell
+./scripts/deploy.ps1 -ApiImage ghcr.io/<owner>/launchpad-api:latest -WebImage ghcr.io/<owner>/launchpad-web:latest -Smoke
+
+**Rollback**
+
+```powershell
+./scripts/rollback.ps1 -ToColor blue
+```
+
 ---
 
 #### Required env (test mode)
