@@ -11,6 +11,63 @@ A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**,
 Copy-Item .env.example .env
 docker compose up --build -d
 ````
+## LaunchPad — UI Update (Phase 1)
+
+This update introduces a non-breaking **UI foundation** for the web app:
+
+- **Tailwind CSS** + PostCSS added to `apps/web`
+- New global stylesheet: `apps/web/src/app/globals.css`
+- Minimal layout polish via `apps/web/src/app/layout.tsx` (keeps all logic and routes intact)
+- Dockerfile updated to include Tailwind/PostCSS configs during `next build`
+
+### Files changed/added
+- `apps/web/package.json`
+- `apps/web/postcss.config.js`
+- `apps/web/tailwind.config.js`
+- `apps/web/src/app/globals.css`
+- `apps/web/src/app/layout.tsx`
+- `apps/web/Dockerfile` (COPY line includes Tailwind/PostCSS configs)
+
+---
+## Blue/Green tip
+
+If the browser shows an empty response, your shell may be overriding `.env`:
+
+```powershell
+$env:ACTIVE_COLOR = "blue"
+docker compose up -d --force-recreate edge
+```
+
+## Stripe (test mode)
+
+Set the following in `.env`:
+
+```
+APP_URL=http://localhost:8080
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PRICE_ID=price_...   # must be a recurring price
+# Optional (for webhooks via Stripe CLI):
+# STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+## Billing troubleshooting
+
+* **500 on “Subscribe (test mode)” with a foreign-key error**
+  Sign **out** and sign back **in** to refresh the JWT (tenant id may have changed).
+* **Tables missing (older DB volume)**
+  Re-apply `infra/postgres/init/004_billing.sql` (and `005_*.sql` if present) or recreate the DB volume.
+* **Not redirected to Stripe**
+  Ensure `STRIPE_PRICE_ID` is **recurring** and `APP_URL` is set; restart `api-*` to pick up env changes.
+
+## Verification checklist
+
+* `GET /health` → `200` (edge)
+* `GET /api/health` → `{ status: "ok", service: "api" }`
+* `/signin` works (default creds shown on the page)
+* `/admin` lists orgs; `/admin/profile` shows your user JSON
+* `/billing` loads status; **Subscribe** redirects to Stripe in test mode
+* `/premium` is gated until subscription is active
+
 
 ### Open these in your browser
 
