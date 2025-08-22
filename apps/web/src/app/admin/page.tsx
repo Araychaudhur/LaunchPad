@@ -2,8 +2,8 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "../../lib/auth";
 import { redirect } from "next/navigation";
 import { apiFetch } from "../../lib/api";
+import CreateOrgButton from "../../components/create-org";
 
-// Render this page on every request to always reflect current orgs
 export const dynamic = "force-dynamic";
 
 type Org = { id: string; name: string };
@@ -11,8 +11,6 @@ type Org = { id: string; name: string };
 export default async function AdminPage() {
   const session = await getServerSession(authOptions);
   const token = (session as any)?.apiToken as string | undefined;
-
-  // No token → go to signin (keeps original behavior)
   if (!token) redirect("/signin?callbackUrl=/admin");
 
   let orgs: Org[] = [];
@@ -22,12 +20,14 @@ export default async function AdminPage() {
     orgs = await apiFetch<Org[]>("/orgs");
   } catch (e: any) {
     error = e?.message || "Failed to load organizations";
-    // Do not throw – render a friendly error card so SSR never crashes.
   }
 
   return (
     <main className="space-y-4">
-      <h2 className="text-lg font-semibold">Your orgs</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold">Your orgs</h2>
+        <CreateOrgButton />
+      </div>
 
       {error ? (
         <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-sm">
