@@ -2,17 +2,17 @@ import Link from "next/link";
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
-    <section style={{ fontFamily: "sans-serif", padding: 24 }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1 style={{ margin: 0 }}>Admin</h1>
-        <nav style={{ display: "flex", gap: 12 }}>
-          <Link href="/admin">Orgs</Link>
-          <Link href="/admin/profile">Profile</Link>
-          <Link href="/">Home</Link>
-          <Link href="/billing">Billing</Link>
-        </nav>
-      </header>
-      <hr style={{ margin: "12px 0 24px" }} />
+    <section className="space-y-6">
+      <div className="border-b border-slate-800 pb-3">
+        <div className="flex items-center justify-between">
+          <h1 className="m-0 text-xl font-semibold">Admin</h1>
+          <nav className="flex gap-4 text-sm text-slate-300">
+            <Link className="hover:text-white" href="/admin">Orgs</Link>
+            <Link className="hover:text-white" href="/admin/profile">Profile</Link>
+            <Link className="hover:text-white" href="/billing">Billing</Link>
+          </nav>
+        </div>
+      </div>
       {children}
     </section>
   );

@@ -89,7 +89,7 @@ export default function BillingPage() {
     }
   };
 
-  if (status === "loading") return <main style={{ padding: 24 }}>Loading…</main>;
+  if (status === "loading") return <main className="p-6">Loading…</main>;
 
   const sub = s?.subscription;
   const premium = !!s?.flags?.premium;
@@ -97,7 +97,6 @@ export default function BillingPage() {
   let line2 = "";
   if (sub) {
     if (premium && sub.cancel_at_period_end) {
-      // FALLBACK: if current_period_end is missing, show cancel_at
       const when = sub.current_period_end || sub.cancel_at;
       line2 = `Will be canceled on: ${format(when)}`;
     } else if (premium) {
@@ -110,29 +109,34 @@ export default function BillingPage() {
   }
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: 24 }}>
-      <h1>Billing</h1>
+    <main className="space-y-4">
+      <h1 className="text-xl font-semibold">Billing</h1>
       <p>Premium: <b>{premium ? "ON" : "OFF"}</b></p>
       {sub && (
-        <>
-          <p>
-            Sub: <code>{sub.stripe_subscription_id}</code> — {sub.status}
-          </p>
-          {line2 && <p>{line2}</p>}
-        </>
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 text-sm">
+          <div>Sub: <code>{sub.stripe_subscription_id}</code> — {sub.status}</div>
+          {line2 && <div className="mt-1">{line2}</div>}
+        </div>
       )}
 
-      <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
-        <button onClick={subscribe} disabled={busy} style={{ padding: 8 }}>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button
+          onClick={subscribe}
+          disabled={busy}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700 disabled:opacity-60"
+        >
           {busy ? "Redirecting…" : "Subscribe (test mode)"}
         </button>
-        <button onClick={openPortal} style={{ padding: 8 }}>
+        <button
+          onClick={openPortal}
+          className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
+        >
           Manage billing (portal)
         </button>
-        <a href="/premium" style={{ alignSelf: "center" }}>View premium demo →</a>
+        <a className="text-sky-400 hover:underline" href="/premium">View premium demo →</a>
       </div>
 
-      {err && <p style={{ color: "crimson", marginTop: 12 }}>{err}</p>}
+      {err && <p className="mt-2 text-red-400">{err}</p>}
     </main>
   );
 }
