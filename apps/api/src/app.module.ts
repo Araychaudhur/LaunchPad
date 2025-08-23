@@ -8,6 +8,7 @@ import { BillingController } from "./billing.controller";
 import { StripeWebhookController } from "./stripe.webhook.controller";
 import { RolesGuard } from "./rbac";
 import { PremiumController } from "./premium.controller";
+import { InvitesController } from "./invites.controller";
 
 @Module({
   controllers: [
@@ -18,7 +19,8 @@ import { PremiumController } from "./premium.controller";
     AuditController,
     BillingController,
     StripeWebhookController,
-    PremiumController
+    PremiumController,
+    InvitesController
   ],
   providers: [RolesGuard]
 })

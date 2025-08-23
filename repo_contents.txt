@@ -1,0 +1,2672 @@
+-----8<----- FILE: .env.example
+# ===== Edge (Nginx) blue/green switch =====
+ACTIVE_COLOR=blue
+
+# ===== Postgres =====
+POSTGRES_USER=app
+POSTGRES_PASSWORD=app
+POSTGRES_DB=appdb
+
+# ===== API (Nest) =====
+API_PORT=3001
+API_OTEL_PROM_PORT=9464
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+
+# ===== Web (Next) =====
+WEB_PORT=3000
+NEXT_PUBLIC_APP_NAME=LaunchPad
+
+# ===== Grafana =====
+GRAFANA_ADMIN_USER=admin
+GRAFANA_ADMIN_PASSWORD=admin
+
+# ===== JWT =====
+JWT_SECRET=dev_secret_change_me
+
+# ===== NextAuth (Web) =====
+NEXTAUTH_SECRET=dev_nextauth_secret_change_me
+NEXTAUTH_URL=http://localhost:8080
+
+# ===== Stripe (test mode) =====
+APP_URL=http://localhost:8080
+STRIPE_SECRET_KEY=sk_test_xxx              
+STRIPE_WEBHOOK_SECRET=whsec_xxx              
+STRIPE_PRICE_ID=price_xxx                    
+
+
+
+-----8<----- FILE: .gitattributes
+* text=auto
+*.sh text eol=lf
+*.sh linguist-language=shell
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+
+-----8<----- FILE: .gitignore
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+# Next.js
+.next/
+out/
+.next/cache/
+
+# NestJS
+dist/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Coverage
+coverage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker (keep overrides local)
+docker-compose.override.yml
+
+# Editor
+.vscode/
+
+
+-----8<----- FILE: docker-compose.override.deploy.yml
+services:
+  api-green:
+    image: ${API_IMAGE_GREEN}
+  web-green:
+    image: ${WEB_IMAGE_GREEN}
+
+
+
+-----8<----- FILE: docker-compose.yml
+name: launchpad
+
+networks:
+  app-net: {}
+
+services:
+  # ---- Datastores ----
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [app-net]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    networks: [app-net]
+
+  maildev:
+    image: maildev/maildev:latest
+    ports: ["1080:1080", "1025:1025"]
+    networks: [app-net]
+
+  # ---- Observability ----
+  otel-collector:
+    image: otel/opentelemetry-collector:0.98.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./infra/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports: ["4317:4317", "4318:4318"]
+    depends_on: [prometheus]
+    networks: [app-net]
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus.rules.yml:/etc/prometheus/recording-rules.yml:ro
+    ports: ["9090:9090"]
+    networks: [app-net]
+
+  grafana:
+    image: grafana/grafana:11.1.3
+    ports: ["3002:3000"]
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on: [prometheus]
+    networks: [app-net]
+
+  # ---- API (blue) ----
+  api-blue:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - PORT=${API_PORT}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+      - API_OTEL_PROM_PORT=${API_OTEL_PROM_PORT}
+      - JWT_SECRET=${JWT_SECRET}
+      - APP_URL=${APP_URL}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PRICE_ID=${STRIPE_PRICE_ID}
+    expose: ["3001", "9464"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"http=require('http'); http.get('http://localhost:3001/health', r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))\""
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [app-net]
+
+  # ---- API (green) ----
+  api-green:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - PORT=${API_PORT}
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT}
+      - API_OTEL_PROM_PORT=${API_OTEL_PROM_PORT}
+      - JWT_SECRET=${JWT_SECRET}
+      - APP_URL=${APP_URL}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - STRIPE_PRICE_ID=${STRIPE_PRICE_ID}
+    expose: ["3001", "9464"]
+    profiles: ["green"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"http=require('http'); http.get('http://localhost:3001/health', r=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))\""
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [app-net]
+
+  # ---- Web (blue) ----
+  web-blue:
+    build:
+      context: ./apps/web
+    environment:
+      - NODE_ENV=production
+      - PORT=${WEB_PORT}
+      - NEXT_PUBLIC_APP_NAME=${NEXT_PUBLIC_APP_NAME}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - API_INTERNAL_URL=http://api-blue:3001 
+    expose: ["3000"]
+    depends_on:
+      api-blue:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"http=require('http'); http.get('http://localhost:3000', r=>{process.exit(r.statusCode>=200&&r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [app-net]
+
+  # ---- Web (green) ----
+  web-green:
+    build:
+      context: ./apps/web
+    environment:
+      - NODE_ENV=production
+      - PORT=${WEB_PORT}
+      - NEXT_PUBLIC_APP_NAME=${NEXT_PUBLIC_APP_NAME}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - API_INTERNAL_URL=http://api-green:3001
+    expose: ["3000"]
+    profiles: ["green"]
+    depends_on:
+      api-green:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"http=require('http'); http.get('http://localhost:3000', r=>{process.exit(r.statusCode>=200&&r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [app-net]
+
+  # ---- Edge (Nginx) ----
+  edge:
+    build:
+      context: ./edge
+    environment:
+      - ACTIVE_COLOR=${ACTIVE_COLOR}
+    ports:
+      - "8080:8080"
+    depends_on:
+      api-blue:
+        condition: service_healthy
+      web-blue:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [app-net]
+
+volumes:
+  pgdata:
+
+
+
+-----8<----- FILE: LICENSE
+MIT License
+
+Copyright (c) 2025 Apoorva Ray Chaudhuri
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+
+-----8<----- FILE: README.md
+# LaunchPad – Multi-tenant SaaS Skeleton (Docker-first)
+
+![ci](https://github.com/Araychaudhur/LaunchPad/actions/workflows/ci.yml/badge.svg?branch=main)
+
+A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**, **NestJS (API)**, **Postgres**, **Redis**, **Nginx edge**, and **Observability** (OpenTelemetry ? Collector, Prometheus, Grafana). Fully containerized for **Windows + VSCode** with **Docker only**.
+
+---
+
+## Run in 60 seconds (Windows PowerShell)
+```powershell
+Copy-Item .env.example .env
+docker compose up --build -d
+````
+
+### Open these in your browser
+
+* App: [http://localhost:8080/](http://localhost:8080/)
+* API health: [http://localhost:8080/api/health](http://localhost:8080/api/health)
+* Prometheus: [http://localhost:9090/](http://localhost:9090/)
+* Grafana: [http://localhost:3002/](http://localhost:3002/) (admin/admin)
+* MailDev: [http://localhost:1080/](http://localhost:1080/)
+
+---
+
+## Blue/Green demo (local)
+
+```powershell
+# Start green alongside blue
+docker compose --profile green up -d --build api-green web-green
+
+# Switch traffic to green via edge
+$env:ACTIVE_COLOR = "green"
+docker compose up -d edge
+```
+
+Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
+
+---
+
+## Milestones & Progress
+
+### ? M0 — Bootable skeleton
+
+* Next.js + NestJS behind Nginx edge (rate limiting + passive circuit breaker).
+* Postgres, Redis, MailDev; OTEL ? Collector; Prometheus + Grafana datasource.
+* Docker-only dev (no Node on host). GitHub Actions CI health-checks via edge.
+* **Outcome:** `docker compose up --build` brings up the stack; `/api/health` OK.
+
+### ? M1a — Multitenancy + RLS + JWT + seed
+
+* **Schema:** tenants, users, orgs, memberships.
+* **RLS:** enforced via per-request GUCs (`app.tenant_id`, `app.user_id`).
+* **Seed:** tenant `Acme`, org `Acme HQ`, admin user `admin@acme.test` / `admin123!`.
+* **API:** `POST /api/auth/login` ? `{ token }`, `GET /api/me`, `GET /api/orgs` (RLS).
+* **Quick verify (PowerShell):**
+
+  ```powershell
+  $body = @{ email = "admin@acme.test"; password = "admin123!" } | ConvertTo-Json
+  $login = Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/auth/login -ContentType "application/json" -Body $body
+  $token = $login.token
+  Invoke-RestMethod -Uri http://localhost:8080/api/me   -Headers @{ Authorization = "Bearer $token" }
+  Invoke-RestMethod -Uri http://localhost:8080/api/orgs -Headers @{ Authorization = "Bearer $token" }
+  ```
+
+  **Expected:** `/me` shows your ids; `/orgs` shows `[ { name: "Acme HQ" } ]`.
+
+### ? M1b — Web login (NextAuth) + admin page
+
+* **NextAuth (Credentials)** bridges to API `/auth/login`.
+* API JWT stored in session; server components can call API with it.
+* **Admin page:** `/admin` fetches `/api/orgs` server-side using your JWT.
+* **Edge routing:** `/api/auth/*` ? **web**; other `/api/*` ? **API**.
+* **Quick verify:**
+
+  1. Open `http://localhost:8080/signin`
+  2. Login with `admin@acme.test / admin123!`
+  3. Visit `http://localhost:8080/admin` ? see your orgs JSON.
+
+### ? M1c — UI polish for Admin
+
+* Server-side **redirect to /signin** when not authenticated.
+* Reusable `apiFetch()` helper for server components (uses session JWT).
+* New **/admin/profile** page (renders `/api/me` payload).
+* Cleaner **/admin** layout with simple nav (Orgs / Profile / Home).
+
+### ? M2 — RBAC + Audit Logs
+
+- **RBAC guard**: `RequireTenantRole('ADMIN','OWNER')` checks tenant role via memberships.
+- **Audit logs** table with RLS; helper writes `{ action, resource, resource_id, meta }`.
+- **Endpoints**:
+  - `POST /api/orgs` – create org (requires ADMIN/OWNER) and writes `org.create` audit.
+  - `GET  /api/audit-logs` – list recent audit events (ADMIN/OWNER).
+- **Seeded user**: `member@acme.test` / `member123!` (role: MEMBER) to validate deny paths.
+- **Edge routing note**: exact match routes `/api/auth/login` ? API; all other `/api/auth/*` ? Web (NextAuth).
+- **Quick verify (PowerShell)**:
+  ```powershell
+  # Admin can create org
+  $admin = (Invoke-RestMethod -Method Post http://localhost:8080/api/auth/login `
+    -ContentType application/json `
+    -Body (@{ email="admin@acme.test"; password="admin123!" } | ConvertTo-Json)).token
+
+  Invoke-RestMethod -Method Post http://localhost:8080/api/orgs `
+    -Headers @{ Authorization = "Bearer $admin" } `
+    -ContentType application/json -Body '{"name":"Acme Lab"}'
+
+  Invoke-RestMethod http://localhost:8080/api/audit-logs -Headers @{ Authorization = "Bearer $admin" }
+
+  # Member is denied (403)
+  $member = (Invoke-RestMethod -Method Post http://localhost:8080/api/auth/login `
+    -ContentType application/json `
+    -Body (@{ email="member@acme.test"; password="member123!" } | ConvertTo-Json)).token
+
+  try {
+    Invoke-RestMethod -Method Post http://localhost:8080/api/orgs `
+      -Headers @{ Authorization = "Bearer $member" } `
+      -ContentType application/json -Body '{"name":"Should Fail"}'
+  } catch { $_.Exception.Message } # expect 403
+
+### ? M2b — SLOs (P95 latency & error rate)
+
+- API exposes Prometheus metrics (`/metrics`) with histogram (`http_request_duration_seconds`) and counter (`http_requests_total`).
+- Prometheus recording rules:
+  - `slo:http_request_duration_seconds:p95:5m`
+  - `sli:http_error_rate:ratio:5m`
+- Grafana dashboard **“LaunchPad SLOs”** visualizes both over time.
+- Quick verify:
+  ```powershell
+  1..50 | % { Invoke-RestMethod http://localhost:8080/api/health -ErrorAction SilentlyContinue | Out-Null; Start-Sleep -Milliseconds 200 }
+
+### ? M3 — Billing (Stripe test mode) + Idempotent Webhooks + Feature Flags
+
+* **DB** (keeps existing data):
+  `billing_customers`, `subscriptions`, `processed_events` *(idempotency ledger)*, `feature_flags` (tenant-scoped).
+  RLS on tenant tables; `processed_events` is global.
+* **API**
+
+  * `POST /api/billing/checkout` ? creates Stripe **Checkout Session** (JWT required)
+  * `GET  /api/billing/status` ? returns `{ subscription, flags:{ premium } }` (JWT required)
+  * `POST /api/webhooks/stripe` ? handles events; **idempotent** via `processed_events`
+* **Edge/Nginx**: special route `= /api/webhooks/stripe` (no rate-limit) to API.
+* **Web**: `/billing` page (requires login). Shows Premium flag + subscription id and has **Subscribe (test mode)** button.
+
+### ? M3b — Customer Portal + Cancellation messaging (polish)
+
+**What changed**
+- Added **Stripe Customer Portal** button on `/billing`.
+- Webhook now refreshes subscription details and records:
+  - `cancel_at_period_end`, `cancel_at`, `canceled_at`, `current_period_end`
+- UI messaging on `/billing`:
+  - **Renews on …** (active)
+  - **Will be canceled on …** (cancel at period end)
+  - **Canceled on …** (fully canceled)
+- `/premium` remains feature-gated by `feature_flags.premium`.
+
+**Dev notes**
+- Keep Stripe CLI running in dev:
+  ```powershell
+  stripe listen --forward-to localhost:8080/api/webhooks/stripe
+  # put the printed whsec_... into .env as STRIPE_WEBHOOK_SECRET
+  docker compose up -d --force-recreate api-blue
+
+* Test:
+
+  1. `/billing` ? **Manage billing (portal)** ? cancel at period end.
+  2. See `customer.subscription.updated` forwarded (HTTP 200) in CLI.
+  3. Refresh `/billing` ? **Will be canceled on …**.
+  4. Undo cancel ? message switches back to **Renews on …**.
+
+### ? M4 — Zero-downtime Blue/Green deploys (GHCR + Docker Compose)
+
+**Pipeline**
+- GitHub Actions builds & pushes:
+  - `ghcr.io/<owner>/<repo>-api:<sha>` (+ `:latest`)
+  - `ghcr.io/<owner>/<repo>-web:<sha>` (+ `:latest`)
+
+**Local deploy (zero-downtime)**
+- Start **green** next to **blue** with new images
+- Health-check green (`/api/health` and web `/`)
+- (Optional) run DB migrations when green is healthy
+- Flip traffic by reloading `edge` with `ACTIVE_COLOR=green`
+- One-command rollback to blue
+
+**Commands**
+```powershell
+# Deploy green
+./scripts/deploy.ps1 -Color green `
+  -ApiImage ghcr.io/<owner>/<repo>-api:<sha> `
+  -WebImage ghcr.io/<owner>/<repo>-web:<sha>
+
+# Optional migrations
+./scripts/deploy.ps1 -Color green -ApiImage ... -WebImage ... -RunMigrations
+
+# Rollback
+./scripts/rollback.ps1 -ToColor blue
+
+### ? M4b — Post-switch smoke test & auto confidence
+- `scripts/deploy.ps1` deploys GREEN, flips edge, and (optionally) runs `scripts/smoke.ps1`.
+- Smoke checks `/api/health` and `/` via the edge (http://localhost:8080).
+- Rollback script still available for manual flips.
+
+**Deploy with smoke**
+```powershell
+./scripts/deploy.ps1 -ApiImage ghcr.io/<owner>/launchpad-api:latest -WebImage ghcr.io/<owner>/launchpad-web:latest -Smoke
+
+**Rollback**
+
+```powershell
+./scripts/rollback.ps1 -ToColor blue
+```
+
+---
+
+#### Required env (test mode)
+
+Add to `.env` (not `.env.example`):
+
+```env
+APP_URL=http://localhost:8080
+STRIPE_SECRET_KEY=sk_test_xxx          # Stripe Dashboard ? Developers ? API keys
+STRIPE_PRICE_ID=price_xxx              # Products ? your test product price
+STRIPE_WEBHOOK_SECRET=whsec_xxx        # from Stripe CLI (see below). Leave blank only if simulating.
+```
+
+> After editing:
+> `docker compose up -d --force-recreate api-blue`
+
+---
+
+#### Webhooks (dev) — Stripe CLI **must be running**
+
+```powershell
+# one-time install/login
+winget install Stripe.StripeCLI
+stripe login
+
+# run listener (keep this window open)
+stripe listen --forward-to localhost:8080/api/webhooks/stripe
+```
+
+Copy the printed **`whsec_…`**, place it in `.env` as `STRIPE_WEBHOOK_SECRET`, then restart API:
+
+```powershell
+docker compose up -d --force-recreate api-blue
+```
+
+> Note: every time you restart `stripe listen`, the **whsec** changes. Update `.env` and force-recreate the API.
+
+---
+
+#### Quick verify (UI path)
+
+1. Open `http://localhost:8080/billing` ? sign in if prompted.
+2. Click **Subscribe (test mode)** ? Stripe page ? pay with `4242 4242 4242 4242` (any future date/CVC/ZIP).
+3. Watch the Stripe CLI window for `checkout.session.completed` / `customer.subscription.*` with **200**.
+4. Refresh `/billing` ? **Premium: ON** and subscription id visible.
+
+---
+
+#### Quick verify (API path)
+
+```powershell
+# Login
+$tok = (Invoke-RestMethod -Method Post http://localhost:8080/api/auth/login `
+  -ContentType application/json `
+  -Body (@{ email="admin@acme.test"; password="admin123!" } | ConvertTo-Json)).token
+
+# Create checkout session (returns long URL)
+$resp = Invoke-RestMethod -Method Post http://localhost:8080/api/billing/checkout `
+  -Headers @{ Authorization = "Bearer $tok" }
+$resp | ConvertTo-Json -Depth 5
+Start-Process $resp.url
+
+# After successful payment + webhook delivery
+Invoke-RestMethod http://localhost:8080/api/billing/status `
+  -Headers @{ Authorization = "Bearer $tok" }
+# ? subscription row + flags.premium = true
+```
+
+---
+
+#### Troubleshooting
+
+* **Stripe page says “Something went wrong”** ? URL was truncated. Use:
+
+  ```powershell
+  $resp.url | Set-Clipboard; Start-Process $resp.url
+  ```
+* **/billing shows 401 or “Failed to load status”** ? sign in again; the page auto-redirects on 401.
+* **Premium stays OFF** ? ensure Stripe CLI is running, `STRIPE_WEBHOOK_SECRET` matches current listener, and API was force-recreated.
+  Inspect:
+
+  ```powershell
+  docker compose logs api-blue -n 200 | Select-String stripe
+  ```
+* **Edge 503 during load tests** ? rate-limit was hit; slow the loop or exempt `/api/health` in nginx.
+
+---
+
+#### (If you need to re-apply the M3 migration manually)
+
+```powershell
+$u = (Select-String -Path .env -Pattern '^POSTGRES_USER=').Line.Split('=')[1]
+$db = (Select-String -Path .env -Pattern '^POSTGRES_DB=').Line.Split('=')[1]
+docker compose cp infra/postgres/init/004_billing.sql postgres:/tmp/004_billing.sql
+docker compose exec -T postgres psql -U $u -d $db -v ON_ERROR_STOP=1 -f /tmp/004_billing.sql
+```
+---
+
+## Project structure (key parts)
+
+```
+LaunchPad/
++- apps/
+¦  +- api/
+¦  ¦  +- src/
+¦  ¦  ¦  +- app.module.ts, health.controller.ts, otel.ts
+¦  ¦  ¦  +- auth.controller.ts, jwt.guard.ts, db.ts
+¦  ¦  ¦  +- me.controller.ts, orgs.controller.ts
+¦  ¦  +- Dockerfile, package.json, tsconfig.json
+¦  +- web/
+¦     +- src/app/
+¦     ¦  +- api/auth/[...nextauth]/route.ts
+¦     ¦  +- admin/layout.tsx        # M1c
+¦     ¦  +- admin/page.tsx          # M1c
+¦     ¦  +- admin/profile/page.tsx  # M1c
+¦     ¦  +- signin/page.tsx, layout.tsx, page.tsx
+¦     +- src/components/providers.tsx
+¦     +- src/lib/auth.ts, src/lib/api.ts  # M1c
+¦     +- Dockerfile, package.json, tsconfig.json
++- edge/
+¦  +- nginx.conf.template  # routes /api/auth/* -> web, others /api/* -> api
+¦  +- entrypoint.sh, Dockerfile
++- infra/
+¦  +- postgres/init/001_init.sql, 002_schema.sql
+¦  +- otel-collector.yaml, prometheus.yml
+¦  +- grafana/provisioning/datasources/datasource.yml
++- .github/workflows/ci.yml
++- .env.example
++- docker-compose.yml
++- README.md
+```
+
+---
+
+## Environment
+
+Copy once per fresh clone:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Key variables:
+
+* `ACTIVE_COLOR=blue|green` – which color edge routes to.
+* `POSTGRES_*` – dev DB credentials.
+* `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318` – traces.
+* `API_OTEL_PROM_PORT=9464` – API metrics.
+* `JWT_SECRET` – HMAC secret for API JWTs.
+* `NEXTAUTH_SECRET`, `NEXTAUTH_URL=http://localhost:8080` – NextAuth.
+* `API_INTERNAL_URL` (web services) – `http://api-blue:3001` / `http://api-green:3001`.
+
+---
+
+## CI (GitHub Actions)
+
+Workflow: `.github/workflows/ci.yml`
+Checks out ? copies `.env.example` ? `docker compose up -d --build` ? polls `http://localhost:8080/api/health` until healthy; uploads logs on failure. Triggers on push/PR to `main`.
+
+---
+
+## Troubleshooting
+
+```powershell
+docker compose ps
+docker compose logs edge -n 100
+docker compose logs api-blue -n 100
+docker compose logs web-blue -n 150
+```
+
+* **404 at `/api/auth/*`** ? ensure `nginx.conf.template` routes it to `web` and uses `proxy_pass http://web_upstream$request_uri;`.
+* **500 from `/api/orgs`** ? ensure `db.ts` uses `set_config('app.tenant_id', $1, true)` (not `SET LOCAL ... $1`).
+* **Edge “host not found”** ? rebuild edge to strip CRLF and ensure health-gated `depends_on`.
+
+---
+
+## Roadmap
+
+* **M4b:** A tiny **post-switch smoke test** (e2e ping + roll back automatically on failure)
+* **M5:** Zero-downtime blue/green deploy via GitHub Actions with health/migration gates.
+* **M6:** Hardening (pagination, optimistic concurrency, edge rate limiting & circuit breakers), Jest/Playwright tests.
+
+---
+
+## License
+
+MIT — see `LICENSE`.
+
+
+
+-----8<----- FILE: .github\workflows\ci.yml
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-healthcheck:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      DOCKER_BUILDKIT: 1
+      COMPOSE_DOCKER_CLI_BUILD: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare env
+        run: cp .env.example .env
+
+      - name: Build & start stack
+        run: docker compose up -d --build
+
+      - name: Wait for API health via edge
+        run: |
+          set -e
+          for i in {1..60}; do
+            if curl -fsS http://localhost:8080/api/health >/dev/null; then
+              echo "edge/api healthy"; exit 0;
+            fi
+            echo "waiting ($i/60)…"
+            sleep 2
+          done
+          echo "healthcheck failed"
+          exit 1
+
+      - name: Dump compose status & logs (on failure)
+        if: failure()
+        run: |
+          docker compose ps
+          docker compose logs --no-color > compose-logs.txt
+
+      - name: Upload logs artifact (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+
+-----8<----- FILE: .github\workflows\m4-build-push.yml
+name: M4 - Build & Push Images (GHCR)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Compute lower-case image names that always work (push or dispatch)
+      - name: Compute image tags
+        id: tags
+        shell: bash
+        run: |
+          REPO_LOWER="${GITHUB_REPOSITORY,,}"           # owner/name (lowercase)
+          SHA="$GITHUB_SHA"
+
+          echo "IMAGE_API=ghcr.io/${REPO_LOWER}-api:${SHA}"       >> $GITHUB_ENV
+          echo "IMAGE_WEB=ghcr.io/${REPO_LOWER}-web:${SHA}"       >> $GITHUB_ENV
+          echo "IMAGE_API_LATEST=ghcr.io/${REPO_LOWER}-api:latest" >> $GITHUB_ENV
+          echo "IMAGE_WEB_LATEST=ghcr.io/${REPO_LOWER}-web:latest" >> $GITHUB_ENV
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push API
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/api
+          file: ./apps/api/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_API }}
+            ${{ env.IMAGE_API_LATEST }}
+
+      - name: Build & push Web
+        uses: docker/build-push-action@v5
+        with:
+          context: ./apps/web
+          file: ./apps/web/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_WEB }}
+            ${{ env.IMAGE_WEB_LATEST }}
+
+      - name: Show tags
+        run: |
+          echo "::notice title=API::${IMAGE_API}"
+          echo "::notice title=WEB::${IMAGE_WEB}"
+
+
+
+-----8<----- FILE: apps\api\Dockerfile
+# --- Build (with dev deps for tsc) ---
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci || npm i
+COPY tsconfig.json ./tsconfig.json
+COPY src ./src
+RUN npm run build
+
+# --- Runtime (prod-only deps, deterministic if lock exists) ---
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV API_OTEL_PROM_PORT=9464
+
+# Install only production dependencies
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev || npm i --omit=dev
+
+# Bring compiled JS
+COPY --from=build /app/dist ./dist
+
+EXPOSE 3001 9464
+CMD ["node", "dist/main.js"]
+
+
+
+-----8<----- FILE: apps\api\package.json
+{
+  "name": "api",
+  "version": "0.0.1",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "ts-node src/main.ts"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.3.10",
+    "@nestjs/core": "^10.3.10",
+    "@nestjs/platform-express": "^10.3.10",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/auto-instrumentations-node": "^0.49.1",
+    "@opentelemetry/exporter-prometheus": "^0.55.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.55.0",
+    "@opentelemetry/sdk-node": "^0.55.0",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3",
+    "prom-client": "^14.2.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "stripe": "^14.23.0",
+    "body-parser": "^1.20.3"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.5",
+    "@types/node": "^20.11.30",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5",
+    "@types/body-parser": "^1.19.5"
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\tsconfig.json
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "es2019",
+    "lib": ["es2019"],
+    "moduleResolution": "node",
+    "types": ["node"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "esModuleInterop": true,
+    "sourceMap": false,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+
+
+
+-----8<----- FILE: apps\api\src\app.module.ts
+import { Module } from "@nestjs/common";
+import { HealthController } from "./health.controller";
+import { AuthController } from "./auth.controller";
+import { OrgsController } from "./orgs.controller";
+import { MeController } from "./me.controller";
+import { AuditController } from "./audit.controller";
+import { BillingController } from "./billing.controller";
+import { StripeWebhookController } from "./stripe.webhook.controller";
+import { RolesGuard } from "./rbac";
+import { PremiumController } from "./premium.controller";
+
+@Module({
+  controllers: [
+    HealthController,
+    AuthController,
+    OrgsController,
+    MeController,
+    AuditController,
+    BillingController,
+    StripeWebhookController,
+    PremiumController
+  ],
+  providers: [RolesGuard]
+})
+export class AppModule {}
+
+
+
+-----8<----- FILE: apps\api\src\audit.controller.ts
+import { Controller, Get, Query, Req, UseGuards } from "@nestjs/common";
+import { JwtGuard } from "./jwt.guard";
+import { RequireTenantRole } from "./rbac";
+import { withTenantClient } from "./db";
+
+@Controller("audit-logs")
+@UseGuards(JwtGuard)
+export class AuditController {
+  @Get()
+  @RequireTenantRole("ADMIN", "OWNER")
+  async list(@Req() req: any, @Query("limit") limitQ?: string) {
+    const { tenantId, userId } = req.user!;
+    const limit = Math.max(1, Math.min(100, Number(limitQ || 20)));
+    return await withTenantClient(tenantId, userId, async (c) => {
+      const { rows } = await c.query(
+        `select id, action, resource, resource_id, meta, created_at
+           from audit_logs
+          order by created_at desc
+          limit $1`,
+        [limit]
+      );
+      return rows;
+    });
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\audit.service.ts
+import { PoolClient } from "pg";
+
+export async function audit(
+  c: PoolClient,
+  tenantId: string,
+  userId: string | null,
+  action: string,
+  resource?: string,
+  resourceId?: string,
+  meta?: any
+) {
+  await c.query(
+    `insert into audit_logs (tenant_id, user_id, action, resource, resource_id, meta)
+     values ($1,$2,$3,$4,$5,$6::jsonb)`,
+    [tenantId, userId, action, resource ?? null, resourceId ?? null, meta ? JSON.stringify(meta) : null]
+  );
+}
+
+
+
+-----8<----- FILE: apps\api\src\auth.controller.ts
+import { Body, Controller, Post, UnauthorizedException } from "@nestjs/common";
+import { pool } from "./db";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+
+@Controller("auth")
+export class AuthController {
+  @Post("login")
+  async login(@Body() body: any) {
+    const email = String(body?.email || "").toLowerCase().trim();
+    const password = String(body?.password || "");
+    if (!email || !password) throw new UnauthorizedException("Email and password required");
+
+    const { rows } = await pool.query(
+      "SELECT id, tenant_id, password_hash FROM users WHERE email = $1 LIMIT 1",
+      [email]
+    );
+    const u = rows[0];
+    if (!u) throw new UnauthorizedException("Invalid credentials");
+
+    const ok = await bcrypt.compare(password, u.password_hash);
+    if (!ok) throw new UnauthorizedException("Invalid credentials");
+
+    const token = jwt.sign(
+      { sub: u.id, tenantId: u.tenant_id, email },
+      JWT_SECRET,
+      { algorithm: "HS256", expiresIn: "1d" }
+    );
+
+    return { token };
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\billing.controller.ts
+import { Body, Controller, Get, Post, Req, BadRequestException, UseGuards } from "@nestjs/common";
+import Stripe from "stripe";
+import { JwtGuard } from "./jwt.guard";
+import { withTenantClient } from "./db";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", { apiVersion: "2023-10-16" });
+
+@Controller("billing")
+@UseGuards(JwtGuard)
+export class BillingController {
+  @Get("status")
+  async status(@Req() req: any) {
+    const { tenantId, userId } = req.user!;
+    return await withTenantClient(tenantId, userId, async (c) => {
+      const sub = await c.query(
+        `select stripe_subscription_id, status, current_period_end,
+                cancel_at_period_end, cancel_at, canceled_at
+           from subscriptions
+          order by updated_at desc limit 1`
+      );
+      const flags = await c.query("select premium from feature_flags");
+      return { subscription: sub.rows[0] ?? null, flags: flags.rows[0] ?? { premium: false } };
+    });
+  }
+
+  @Post("checkout")
+  async checkout(@Req() req: any, @Body() _body: any) {
+    const { tenantId, userId } = req.user!;
+    const priceId = process.env.STRIPE_PRICE_ID;
+    const appUrl = process.env.APP_URL;
+    if (!priceId || !appUrl) throw new BadRequestException("Stripe env not set");
+
+    const { customerId } = await withTenantClient(tenantId, userId, async (c) => {
+      const cur = await c.query("select stripe_customer_id from billing_customers limit 1");
+      if (cur.rows[0]) return { customerId: cur.rows[0].stripe_customer_id };
+      const customer = await stripe.customers.create({ metadata: { tenantId } });
+      await c.query(
+        "insert into billing_customers(tenant_id, stripe_customer_id) values ($1,$2) on conflict (tenant_id) do update set stripe_customer_id = excluded.stripe_customer_id",
+        [tenantId, customer.id]
+      );
+      return { customerId: customer.id };
+    });
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: customerId,
+      line_items: [{ price: priceId, quantity: 1 }],
+      success_url: `${appUrl}/billing?success=1`,
+      cancel_url: `${appUrl}/billing?canceled=1`,
+      metadata: { tenantId }
+    });
+
+    return { url: session.url };
+  }
+
+  @Post("portal")
+  async portal(@Req() req: any) {
+    const { tenantId, userId } = req.user!;
+    const appUrl = process.env.APP_URL || "http://localhost:8080";
+    return await withTenantClient(tenantId, userId, async (c) => {
+      const r = await c.query("select stripe_customer_id from billing_customers limit 1");
+      if (!r.rows[0]) return { error: "Customer not found. Start a checkout first." };
+      const session = await stripe.billingPortal.sessions.create({
+        customer: r.rows[0].stripe_customer_id,
+        return_url: `${appUrl}/billing`,
+      });
+      return { url: session.url };
+    });
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\db.ts
+import { Pool, PoolClient } from "pg";
+
+const connectionString = process.env.DATABASE_URL!;
+export const pool = new Pool({ connectionString });
+
+export async function withTenantClient<T>(
+  tenantId: string,
+  userId: string | null,
+  fn: (client: PoolClient) => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Use set_config(..., ..., true) == SET LOCAL
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    if (userId) {
+      await client.query("SELECT set_config('app.user_id', $1, true)", [userId]);
+    }
+    const out = await fn(client);
+    await client.query("COMMIT");
+    return out;
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\health.controller.ts
+import { Controller, Get } from "@nestjs/common";
+
+@Controller()
+export class HealthController {
+  @Get("/health")
+  health() {
+    return { status: "ok", service: "api" };
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\jwt.guard.ts
+import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from "@nestjs/common";
+import jwt from "jsonwebtoken";
+
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret_change_me";
+
+export interface AuthUser {
+  userId: string;
+  tenantId: string;
+  email?: string;
+}
+
+@Injectable()
+export class JwtGuard implements CanActivate {
+  canActivate(ctx: ExecutionContext): boolean {
+    const req: any = ctx.switchToHttp().getRequest();
+    const hdr: string | undefined = req.headers["authorization"];
+    const token = hdr?.startsWith("Bearer ") ? hdr.slice(7) : undefined;
+    if (!token) throw new UnauthorizedException("Missing bearer token");
+    try {
+      const payload = jwt.verify(token, JWT_SECRET) as any;
+      req.user = { userId: payload.sub, tenantId: payload.tenantId, email: payload.email } as AuthUser;
+      return true;
+    } catch {
+      throw new UnauthorizedException("Invalid token");
+    }
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\main.ts
+import "reflect-metadata";
+import * as bodyParser from "body-parser";
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+import { metricsMiddleware, attachMetricsEndpoint } from "./metrics";
+
+async function bootstrap() {
+  // Start telemetry, but never crash API if it fails
+  try {
+    const { startTelemetry } = await import("./otel.js");
+    await startTelemetry();
+  } catch (e: any) {
+    console.error("[otel] failed to start; continuing:", e?.message ?? e);
+  }
+
+  const app = await NestFactory.create(AppModule, { logger: ["log", "error", "warn"] });
+  app.enableShutdownHooks();
+
+  app.use("/webhooks/stripe", bodyParser.raw({ type: "application/json" }));
+
+  // Metrics
+  app.use(metricsMiddleware);
+  attachMetricsEndpoint(app);
+
+  const port = Number(process.env.PORT || 3001);
+  await app.listen(port);
+  console.log(`[api] listening on :${port}`);
+}
+
+bootstrap().catch((err) => {
+  console.error("[api] fatal error:", err);
+  process.exit(1);
+});
+
+
+
+-----8<----- FILE: apps\api\src\me.controller.ts
+import { Controller, Get, Req, UseGuards } from "@nestjs/common";
+import { JwtGuard } from "./jwt.guard";
+
+@Controller("me")
+@UseGuards(JwtGuard)
+export class MeController {
+  @Get()
+  getMe(@Req() req: any) {
+    return req.user;
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\metrics.ts
+import client from "prom-client";
+import type { Request, Response, NextFunction } from "express";
+import type { INestApplication } from "@nestjs/common";
+
+const registry = new client.Registry();
+client.collectDefaultMetrics({ register: registry });
+
+export const httpRequestDuration = new client.Histogram({
+  name: "http_request_duration_seconds",
+  help: "Request duration in seconds",
+  registers: [registry],
+  labelNames: ["method", "route", "status"] as const,
+  buckets: [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5]
+});
+
+export const httpRequestsTotal = new client.Counter({
+  name: "http_requests_total",
+  help: "Total HTTP requests",
+  registers: [registry],
+  labelNames: ["method", "route", "status"] as const
+});
+
+export function metricsMiddleware(req: Request, res: Response, next: NextFunction) {
+  const start = process.hrtime.bigint();
+  res.on("finish", () => {
+    const ns = Number(process.hrtime.bigint() - start);
+    const s = ns / 1e9;
+    // Nest/Express route path if known, else fallback to URL without query
+    const route = (req as any).route?.path || req.path || req.url.split("?")[0] || "unknown";
+    const labels = { method: req.method, route, status: String(res.statusCode) };
+    httpRequestDuration.observe(labels as any, s);
+    httpRequestsTotal.inc(labels as any);
+  });
+  next();
+}
+
+// Mount /metrics on the main app (served from port 3001)
+export function attachMetricsEndpoint(app: INestApplication) {
+  const expressApp = app.getHttpAdapter().getInstance();
+  expressApp.get("/metrics", async (_req: Request, res: Response) => {
+    res.set("Content-Type", registry.contentType);
+    res.end(await registry.metrics());
+  });
+}
+
+
+
+-----8<----- FILE: apps\api\src\orgs.controller.ts
+import { Body, Controller, Get, Post, BadRequestException, Req, UseGuards } from "@nestjs/common";
+import { JwtGuard } from "./jwt.guard";
+import { RequireTenantRole } from "./rbac";
+import { withTenantClient } from "./db";
+import { audit } from "./audit.service";
+
+@Controller("orgs")
+@UseGuards(JwtGuard)
+export class OrgsController {
+  @Get()
+  async list(@Req() req: any) {
+    const { tenantId, userId } = req.user!;
+    return await withTenantClient(tenantId, userId, async (c) => {
+      const { rows } = await c.query("SELECT id, name FROM orgs ORDER BY name");
+      return rows;
+    });
+  }
+
+  @Post()
+  @RequireTenantRole("ADMIN", "OWNER")
+  async create(@Req() req: any, @Body() body: any) {
+    const { tenantId, userId } = req.user!;
+    const name = String(body?.name || "").trim();
+    if (!name) throw new BadRequestException("name is required");
+
+    return await withTenantClient(tenantId, userId, async (c) => {
+      const { rows } = await c.query(
+        "INSERT INTO orgs (tenant_id, name) VALUES ($1,$2) RETURNING id, name",
+        [tenantId, name]
+      );
+      const org = rows[0];
+      await audit(c, tenantId, userId, "org.create", "org", org.id, { name });
+      return org;
+    });
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\otel.ts
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { PrometheusExporter } from "@opentelemetry/exporter-prometheus";
+
+const otlpEndpoint =
+  process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.replace(/\/$/, "") || "http://otel-collector:4318";
+
+export async function startTelemetry() {
+  const prometheus = new PrometheusExporter(
+    {
+      port: Number(process.env.API_OTEL_PROM_PORT || 9464),
+      endpoint: "/metrics"
+    },
+    () => console.log("[otel] Prometheus exporter running")
+  );
+
+  const sdk = new NodeSDK({
+    traceExporter: new OTLPTraceExporter({ url: `${otlpEndpoint}/v1/traces` }),
+    metricReader: prometheus,
+    instrumentations: [getNodeAutoInstrumentations()]
+  });
+
+  await sdk.start();
+  process.on("SIGTERM", async () => { await sdk.shutdown(); process.exit(0); });
+  process.on("SIGINT", async () => { await sdk.shutdown(); process.exit(0); });
+}
+
+
+
+-----8<----- FILE: apps\api\src\premium.controller.ts
+import { Controller, Get, ForbiddenException, Req, UseGuards } from "@nestjs/common";
+import { JwtGuard } from "./jwt.guard";
+import { withTenantClient } from "./db";
+
+@Controller("premium")
+@UseGuards(JwtGuard)
+export class PremiumController {
+  @Get("report")
+  async report(@Req() req: any) {
+    const { tenantId, userId } = req.user!;
+    return withTenantClient(tenantId, userId, async (c) => {
+      const { rows } = await c.query("select premium from feature_flags");
+      const isPremium = !!rows[0]?.premium;
+      if (!isPremium) throw new ForbiddenException("Premium required");
+      // demo payload
+      return { report: "Top secret analytics", generatedAt: new Date().toISOString() };
+    });
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\rbac.ts
+import {
+  CanActivate, ExecutionContext, ForbiddenException,
+  Injectable, SetMetadata, UseGuards, applyDecorators
+} from "@nestjs/common";
+import { Reflector } from "@nestjs/core";
+import { withTenantClient } from "./db";
+
+export const ROLES_KEY = "tenant_roles";
+export function RequireTenantRole(...roles: ("ADMIN" | "OWNER")[]) {
+  return applyDecorators(SetMetadata(ROLES_KEY, roles), UseGuards(RolesGuard));
+}
+
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private reflector: Reflector) {}
+  async canActivate(ctx: ExecutionContext): Promise<boolean> {
+    const roles =
+      this.reflector.getAllAndOverride<string[]>(ROLES_KEY, [ctx.getHandler(), ctx.getClass()]) || [];
+    if (roles.length === 0) return true;
+
+    const req: any = ctx.switchToHttp().getRequest();
+    const user = req.user;
+    if (!user) throw new ForbiddenException("Missing user");
+
+    const ok = await withTenantClient(user.tenantId, user.userId, async (c) => {
+      const { rows } = await c.query(
+        `select 1
+           from memberships m
+           join orgs o on o.id = m.org_id
+          where m.user_id = $1
+            and o.tenant_id = $2
+            and m.role = any($3::text[])
+          limit 1`,
+        [user.userId, user.tenantId, roles]
+      );
+      return rows.length > 0;
+    });
+
+    if (!ok) throw new ForbiddenException("Insufficient role");
+    return true;
+  }
+}
+
+
+
+-----8<----- FILE: apps\api\src\stripe.webhook.controller.ts
+import { Controller, Headers, Post, Req, Res } from "@nestjs/common";
+import Stripe from "stripe";
+import type { Response } from "express";
+import { withTenantClient } from "./db";
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", { apiVersion: "2023-10-16" });
+
+@Controller("webhooks")
+export class StripeWebhookController {
+  @Post("stripe")
+  async handle(@Req() req: any, @Res() res: Response, @Headers("stripe-signature") sig?: string) {
+    const whSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+    let event: Stripe.Event;
+
+    if (!whSecret) {
+      event = req.body ? JSON.parse(req.body.toString()) : ({} as any);
+    } else {
+      try {
+        event = stripe.webhooks.constructEvent(req.body, sig!, whSecret);
+      } catch (err: any) {
+        console.error("[stripe] signature verify failed:", err.message);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
+      }
+    }
+
+    try {
+      const id = event.id;
+      const type = event.type;
+
+      // Derive tenant
+      let tenantId: string | null = null;
+      let customerId: string | undefined;
+      const obj: any = (event as any).data?.object ?? {};
+      tenantId = obj?.metadata?.tenantId ?? null;
+      customerId = obj?.customer ?? undefined;
+
+      if (!tenantId && customerId) {
+        tenantId = await withTenantClient(null as any, null as any, async (c) => {
+          const { rows } = await c.query(
+            "select tenant_id from billing_customers where stripe_customer_id = $1 limit 1",
+            [customerId]
+          );
+          return rows[0]?.tenant_id as string | undefined;
+        }) ?? null;
+      }
+      if (!tenantId) return res.json({ received: true, skipped: "no-tenant" });
+
+      // Idempotency
+      const already = await withTenantClient(tenantId, null as any, async (c) => {
+        const seen = await c.query("select 1 from processed_events where event_id=$1", [id]);
+        if (seen.rowCount) return true;
+        await c.query("insert into processed_events(event_id) values ($1)", [id]);
+        return false;
+      });
+      if (already) return res.json({ received: true, dedup: true });
+
+      const upsertSub = async (s: Stripe.Subscription) => {
+        // If Stripe sent a slim object without current_period_end, refresh it
+        if (!s.current_period_end) {
+          s = await stripe.subscriptions.retrieve(s.id);
+        }
+        const cancelAtPeriodEnd = !!s.cancel_at_period_end;
+        const cancelAt = s.cancel_at ? new Date(s.cancel_at * 1000) : null;
+        const canceledAt = s.canceled_at ? new Date(s.canceled_at * 1000) : null;
+        const currentPeriodEnd = s.current_period_end ? new Date(s.current_period_end * 1000) : null;
+
+        await withTenantClient(tenantId!, null as any, async (c) => {
+          await c.query(
+            `insert into subscriptions
+               (tenant_id, stripe_subscription_id, status, price_id, product_id,
+                current_period_end, cancel_at_period_end, cancel_at, canceled_at)
+             values ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+             on conflict (stripe_subscription_id)
+             do update set status=excluded.status, price_id=excluded.price_id, product_id=excluded.product_id,
+                           current_period_end=excluded.current_period_end, cancel_at_period_end=excluded.cancel_at_period_end,
+                           cancel_at=excluded.cancel_at, canceled_at=excluded.canceled_at, updated_at=now()`,
+            [
+              tenantId, s.id, s.status,
+              s.items.data[0]?.price?.id ?? null,
+              s.items.data[0]?.price?.product ?? null,
+              currentPeriodEnd, cancelAtPeriodEnd, cancelAt, canceledAt
+            ]
+          );
+
+          const activeLike = s.status === "active" || s.status === "trialing" || s.status === "past_due";
+          const stillPremium =
+            activeLike ||
+            (cancelAtPeriodEnd && !!currentPeriodEnd && currentPeriodEnd.getTime() > Date.now());
+
+          await c.query(
+            `insert into feature_flags(tenant_id, premium) values ($1,$2)
+             on conflict (tenant_id) do update set premium=$2, updated_at=now()`,
+            [tenantId, stillPremium]
+          );
+        });
+      };
+
+      switch (type) {
+        case "checkout.session.completed": {
+          const subId = (obj as Stripe.Checkout.Session).subscription as string | undefined;
+          if (subId) {
+            const sub = await stripe.subscriptions.retrieve(subId);
+            await upsertSub(sub);
+          }
+          break;
+        }
+        case "customer.subscription.created":
+        case "customer.subscription.updated":
+        case "customer.subscription.deleted": {
+          await upsertSub(obj as Stripe.Subscription);
+          break;
+        }
+        default:
+          // ignore others
+          break;
+      }
+
+      return res.json({ received: true });
+    } catch (e: any) {
+      console.error("[stripe] handler error:", e);
+      return res.status(500).send("handler error");
+    }
+  }
+}
+
+
+
+-----8<----- FILE: apps\web\Dockerfile
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci || npm i
+COPY tsconfig.json next.config.mjs next-env.d.ts ./
+COPY src ./src
+RUN npm run build
+
+FROM node:20-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+ENV PORT=3000
+COPY --from=build /app /app
+EXPOSE 3000
+CMD ["npm", "run", "start"]
+
+
+
+-----8<----- FILE: apps\web\next-env.d.ts
+/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+
+
+-----8<----- FILE: apps\web\next.config.mjs
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true
+};
+
+export default nextConfig;
+
+
+
+-----8<----- FILE: apps\web\package.json
+{
+  "name": "web",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p ${PORT:-3000}",
+    "build": "next build",
+    "start": "next start -p ${PORT:-3000}"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "next-auth": "4.24.7",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "@types/node": "^20.11.30"
+  }
+}
+
+
+
+-----8<----- FILE: apps\web\tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "incremental": true
+  },
+  "include": ["next-env.d.ts", "src/**/*"],
+  "exclude": ["node_modules"]
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\layout.tsx
+import Providers from "../components/providers";
+
+export const metadata = { title: "LaunchPad" };
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <Providers>{children}</Providers>
+      </body>
+    </html>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\page.tsx
+"use client";
+import { signIn, signOut, useSession } from "next-auth/react";
+
+export default function HomePage() {
+  const { data: session, status } = useSession();
+  const token = (session as any)?.apiToken as string | undefined;
+
+  return (
+    <main style={{ fontFamily: "sans-serif", padding: 24 }}>
+      <h1>{process.env.NEXT_PUBLIC_APP_NAME || "LaunchPad"}</h1>
+      <p>Web is up. Use the links below.</p>
+
+      {status === "loading" ? (
+        <p>Loading session…</p>
+      ) : token ? (
+        <>
+          <p>Signed in as <code>{session?.user?.email}</code></p>
+          <button onClick={() => signOut({ callbackUrl: "/" })}>Sign out</button>
+          <p style={{ marginTop: 16 }}>
+            <a href="/admin" rel="noreferrer">Open Admin page (server fetch)</a>
+          </p>
+        </>
+      ) : (
+        <>
+          <button onClick={() => signIn(undefined, { callbackUrl: "/" })}>Sign in</button>
+          <p>Or go to <a href="/signin">/signin</a></p>
+        </>
+      )}
+
+      <ul style={{ marginTop: 24 }}>
+        <li><a href="/api/health" target="_blank" rel="noreferrer">Check API health</a></li>
+        <li><a href="http://localhost:9090" target="_blank">Prometheus</a></li>
+        <li><a href="http://localhost:3002" target="_blank">Grafana</a></li>
+        <li><a href="http://localhost:1080" target="_blank">MailDev</a></li>
+      </ul>
+    </main>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\admin\layout.tsx
+import Link from "next/link";
+
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <section style={{ fontFamily: "sans-serif", padding: 24 }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h1 style={{ margin: 0 }}>Admin</h1>
+        <nav style={{ display: "flex", gap: 12 }}>
+          <Link href="/admin">Orgs</Link>
+          <Link href="/admin/profile">Profile</Link>
+          <Link href="/">Home</Link>
+          <Link href="/billing">Billing</Link>
+        </nav>
+      </header>
+      <hr style={{ margin: "12px 0 24px" }} />
+      {children}
+    </section>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\admin\page.tsx
+import { getServerSession } from "next-auth";
+import { authOptions } from "../../lib/auth";
+import { redirect } from "next/navigation";
+import { apiFetch } from "../../lib/api";
+
+type Org = { id: string; name: string };
+
+export default async function AdminPage() {
+  const session = await getServerSession(authOptions);
+  const token = (session as any)?.apiToken as string | undefined;
+  if (!token) redirect("/signin?callbackUrl=/admin");
+
+  const orgs = await apiFetch<Org[]>("/orgs");
+
+  return (
+    <main>
+      <h2>Your orgs</h2>
+      <ul>
+        {orgs.map((o) => (
+          <li key={o.id}>
+            <code>{o.name}</code> <small style={{ opacity: 0.6 }}>({o.id})</small>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\admin\profile\page.tsx
+import { getServerSession } from "next-auth";
+import { authOptions } from "../../../lib/auth";
+import { redirect } from "next/navigation";
+import { apiFetch } from "../../../lib/api";
+
+export default async function ProfilePage() {
+  const session = await getServerSession(authOptions);
+  const token = (session as any)?.apiToken as string | undefined;
+  if (!token) redirect("/signin?callbackUrl=/admin/profile");
+
+  const me = await apiFetch("/me");
+
+  return (
+    <main>
+      <h2>Profile</h2>
+      <pre>{JSON.stringify(me, null, 2)}</pre>
+    </main>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\api\auth\[...nextauth]\route.ts
+import NextAuth from "next-auth";
+import { authOptions } from "../../../../lib/auth";
+
+const handler = NextAuth(authOptions);
+export { handler as GET, handler as POST };
+
+
+
+-----8<----- FILE: apps\web\src\app\billing\page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useSession, signIn } from "next-auth/react";
+
+type Sub = {
+  stripe_subscription_id: string;
+  status: string;
+  current_period_end?: string;
+  cancel_at_period_end?: boolean;
+  cancel_at?: string;
+  canceled_at?: string;
+};
+type Status = { subscription: Sub | null; flags: { premium: boolean } };
+
+function tokenFrom(session: any) {
+  return (
+    session?.apiToken ||
+    session?.accessToken ||
+    session?.user?.apiToken ||
+    session?.user?.accessToken
+  );
+}
+function format(dt?: string | Date | null) {
+  if (!dt) return "";
+  const d = typeof dt === "string" ? new Date(dt) : dt;
+  return d.toLocaleString();
+}
+
+export default function BillingPage() {
+  const { data: session, status } = useSession();
+  const token = tokenFrom(session);
+
+  const [s, setS] = useState<Status | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    setErr(null);
+    (async () => {
+      try {
+        const r = await fetch("/api/billing/status", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+        if (r.status === 401) return signIn(undefined, { callbackUrl: "/billing" });
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        setS(await r.json());
+      } catch (e: any) {
+        setErr(`Failed to load status: ${e?.message || e}`);
+      }
+    })();
+  }, [token]);
+
+  const subscribe = async () => {
+    if (!token) return signIn(undefined, { callbackUrl: "/billing" });
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await fetch("/api/billing/checkout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.status === 401) return signIn(undefined, { callbackUrl: "/billing" });
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      const { url } = await r.json();
+      if (!url) throw new Error("No URL in response");
+      window.location.href = url;
+    } catch (e: any) {
+      setErr(`Checkout failed: ${e?.message || e}`);
+      setBusy(false);
+    }
+  };
+
+  const openPortal = async () => {
+    if (!token) return signIn(undefined, { callbackUrl: "/billing" });
+    try {
+      const r = await fetch("/api/billing/portal", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.status === 401) return signIn(undefined, { callbackUrl: "/billing" });
+      const { url, error } = await r.json();
+      if (url) window.location.href = url;
+      else alert(error || "Could not open portal");
+    } catch (e: any) {
+      alert(e?.message || e);
+    }
+  };
+
+  if (status === "loading") return <main style={{ padding: 24 }}>Loading…</main>;
+
+  const sub = s?.subscription;
+  const premium = !!s?.flags?.premium;
+
+  let line2 = "";
+  if (sub) {
+    if (premium && sub.cancel_at_period_end) {
+      // FALLBACK: if current_period_end is missing, show cancel_at
+      const when = sub.current_period_end || sub.cancel_at;
+      line2 = `Will be canceled on: ${format(when)}`;
+    } else if (premium) {
+      line2 = `Renews on: ${format(sub.current_period_end)}`;
+    } else if (sub.canceled_at) {
+      line2 = `Canceled on: ${format(sub.canceled_at)}`;
+    } else if (sub.cancel_at) {
+      line2 = `Will cancel on: ${format(sub.cancel_at)}`;
+    }
+  }
+
+  return (
+    <main style={{ fontFamily: "sans-serif", padding: 24 }}>
+      <h1>Billing</h1>
+      <p>Premium: <b>{premium ? "ON" : "OFF"}</b></p>
+      {sub && (
+        <>
+          <p>
+            Sub: <code>{sub.stripe_subscription_id}</code> — {sub.status}
+          </p>
+          {line2 && <p>{line2}</p>}
+        </>
+      )}
+
+      <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+        <button onClick={subscribe} disabled={busy} style={{ padding: 8 }}>
+          {busy ? "Redirecting…" : "Subscribe (test mode)"}
+        </button>
+        <button onClick={openPortal} style={{ padding: 8 }}>
+          Manage billing (portal)
+        </button>
+        <a href="/premium" style={{ alignSelf: "center" }}>View premium demo ?</a>
+      </div>
+
+      {err && <p style={{ color: "crimson", marginTop: 12 }}>{err}</p>}
+    </main>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\premium\page.tsx
+"use client";
+
+import { useEffect, useState } from "react";
+import { useSession, signIn } from "next-auth/react";
+
+function tokenFrom(session: any) {
+  return (
+    session?.apiToken ||
+    session?.accessToken ||
+    session?.user?.apiToken ||
+    session?.user?.accessToken
+  );
+}
+
+export default function PremiumDemo() {
+  const { data: session } = useSession();
+  const token = tokenFrom(session);
+  const [data, setData] = useState<any>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!token) return;
+    (async () => {
+      try {
+        const r = await fetch("/api/premium/report", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (r.status === 401) return signIn(undefined, { callbackUrl: "/premium" });
+        if (r.status === 403) { setErr("Premium required — please subscribe."); return; }
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        setData(await r.json());
+      } catch (e: any) {
+        setErr(e?.message || String(e));
+      }
+    })();
+  }, [token]);
+
+  return (
+    <main style={{ fontFamily: "sans-serif", padding: 24 }}>
+      <h1>Premium demo</h1>
+      {err && <p style={{ color: "crimson" }}>{err}</p>}
+      {data && <pre>{JSON.stringify(data, null, 2)}</pre>}
+      {!token && <button onClick={() => signIn(undefined, { callbackUrl: "/premium" })}>Sign in</button>}
+      <p style={{ marginTop: 16 }}>
+        Need access? <a href="/billing">Subscribe on the billing page</a>.
+      </p>
+    </main>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\app\signin\page.tsx
+"use client";
+import { signIn } from "next-auth/react";
+import { useState } from "react";
+
+export default function SignIn() {
+  const [email, setEmail] = useState("admin@acme.test");
+  const [password, setPassword] = useState("admin123!");
+  const [error, setError] = useState<string | null>(null);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const res = await signIn("credentials", {
+      email,
+      password,
+      callbackUrl: "/",
+      redirect: true
+    });
+    // next-auth handles redirect; if it returns, an error probably occurred
+    if (res?.error) setError(res.error);
+  };
+
+  return (
+    <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 480 }}>
+      <h1>Sign in</h1>
+      <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
+        <label>Email <input value={email} onChange={e => setEmail(e.target.value)} /></label>
+        <label>Password <input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>
+        <button type="submit">Sign in</button>
+        {error && <p style={{ color: "red" }}>{error}</p>}
+      </form>
+    </main>
+  );
+}
+
+
+
+-----8<----- FILE: apps\web\src\components\providers.tsx
+"use client";
+import { SessionProvider } from "next-auth/react";
+
+export default function Providers({ children }: { children: React.ReactNode }) {
+  return <SessionProvider>{children}</SessionProvider>;
+}
+
+
+
+-----8<----- FILE: apps\web\src\lib\api.ts
+import { getServerSession } from "next-auth";
+import { authOptions } from "./auth";
+
+export async function apiFetch<T = any>(path: string, init?: RequestInit): Promise<T> {
+  const session = await getServerSession(authOptions);
+  const token = (session as any)?.apiToken as string | undefined;
+  if (!token) throw new Error("Not signed in");
+  const res = await fetch(`${process.env.API_INTERNAL_URL}${path}`, {
+    ...init,
+    headers: { ...(init?.headers || {}), Authorization: `Bearer ${token}` },
+    cache: "no-store"
+  });
+  if (!res.ok) throw new Error(`API ${path} ${res.status}`);
+  return res.json() as Promise<T>;
+}
+
+
+
+-----8<----- FILE: apps\web\src\lib\auth.ts
+import type { NextAuthOptions } from "next-auth";
+import Credentials from "next-auth/providers/credentials";
+
+export const authOptions: NextAuthOptions = {
+  secret: process.env.NEXTAUTH_SECRET,
+  session: { strategy: "jwt" },
+  providers: [
+    Credentials({
+      name: "Credentials",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" }
+      },
+      async authorize(credentials) {
+        const email = String(credentials?.email || "").toLowerCase().trim();
+        const password = String(credentials?.password || "");
+        const res = await fetch(`${process.env.API_INTERNAL_URL}/auth/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email, password })
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        // Store API JWT on the user object for jwt() callback.
+        return { id: email, email, apiToken: data.token } as any;
+      }
+    })
+  ],
+  callbacks: {
+    async jwt({ token, user }) {
+      if (user && (user as any).apiToken) {
+        token.apiToken = (user as any).apiToken;
+        token.email = user.email;
+      }
+      return token;
+    },
+    async session({ session, token }) {
+      (session as any).apiToken = token.apiToken;
+      return session;
+    }
+  },
+  pages: { signIn: "/signin" }
+};
+
+
+
+-----8<----- FILE: apps\web\src\types\next-auth.d.ts
+import NextAuth from "next-auth";
+
+declare module "next-auth" {
+  interface Session {
+    apiToken?: string;
+  }
+}
+
+
+
+-----8<----- FILE: edge\Dockerfile
+FROM nginx:1.25-alpine
+RUN apk add --no-cache bash gettext curl
+WORKDIR /etc/nginx
+COPY nginx.conf.template /etc/nginx/templates/nginx.conf.template
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 8080
+CMD ["/entrypoint.sh"]
+
+
+
+-----8<----- FILE: edge\entrypoint.sh
+#!/bin/bash
+set -euo pipefail
+: "${ACTIVE_COLOR:=blue}"
+
+API_HOST="api-${ACTIVE_COLOR}"
+WEB_HOST="web-${ACTIVE_COLOR}"
+API_URL="http://${API_HOST}:3001/health"
+WEB_URL="http://${WEB_HOST}:3000"
+
+echo "[edge] ACTIVE_COLOR=${ACTIVE_COLOR}"
+echo "[edge] Waiting for API: ${API_URL}"
+echo "[edge] Waiting for Web: http://${WEB_HOST}:3000"
+
+# Wait up to ~120s total
+for i in {1..60}; do
+  API_OK=0
+  WEB_OK=0
+  curl -sf "$API_URL" >/dev/null 2>&1 && API_OK=1 || true
+  curl -sf "http://${WEB_HOST}:3000" >/dev/null 2>&1 && WEB_OK=1 || true
+  if [ $API_OK -eq 1 ] && [ $WEB_OK -eq 1 ]; then
+    echo "[edge] API and Web are ready."
+    break
+  fi
+  echo "[edge] Not ready yet ($i/60)…"
+  sleep 2
+done
+
+# Render nginx.conf with the chosen color
+envsubst '${ACTIVE_COLOR}' < /etc/nginx/templates/nginx.conf.template > /etc/nginx/nginx.conf
+
+echo "[edge] Starting Nginx…"
+nginx -g 'daemon off;'
+
+
+
+-----8<----- FILE: edge\nginx.conf.template
+user  nginx;
+worker_processes  auto;
+events { worker_connections  1024; }
+
+http {
+  access_log /var/log/nginx/access.log;
+  error_log  /var/log/nginx/error.log;
+
+  # Rate limiting (10 req/sec, burst 20)
+  limit_req_zone $binary_remote_addr zone=api_rl:10m rate=10r/s;
+
+  # Passive circuit-breaker behavior
+  proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+  proxy_connect_timeout 2s;
+  proxy_read_timeout 10s;
+  proxy_send_timeout 10s;
+
+  upstream api_upstream {
+    server api-${ACTIVE_COLOR}:3001 max_fails=3 fail_timeout=10s;
+  }
+
+  upstream web_upstream {
+    server web-${ACTIVE_COLOR}:3000 max_fails=3 fail_timeout=10s;
+  }
+
+  server {
+    listen 8080;
+
+    # NEW: API login endpoint (JWT) must go to API
+    location = /api/auth/login {
+      proxy_pass http://api_upstream/auth/login;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    # ---- NextAuth lives in the Web app ----
+    location /api/auth/ {
+      proxy_pass http://web_upstream$request_uri;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location = /api/health {
+      proxy_pass http://api_upstream/health;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location = /api/webhooks/stripe {
+      proxy_pass http://api_upstream/webhooks/stripe;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location /api/ {
+      limit_req zone=api_rl burst=20 nodelay;
+      proxy_pass http://api_upstream/;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location / {
+      proxy_pass http://web_upstream/;
+      proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $remote_addr;
+    }
+
+    location = /health {
+      return 200 "edge-ok";
+    }
+  }
+}
+
+
+
+-----8<----- FILE: infra\otel-collector.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+
+processors:
+  batch: {}
+
+exporters:
+  logging:
+    loglevel: info
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [logging]
+
+
+-----8<----- FILE: infra\prometheus.rules.yml
+groups:
+  - name: launchpad_slos
+    rules:
+      # P95 (unchanged)
+      - record: slo:http_request_duration_seconds:p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+
+      # Error-rate over 5m — emit 0 when there are no 5xx
+      - record: sli:http_error_rate:ratio:5m
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            or on() vector(0)
+          )
+          /
+          clamp_min(sum(rate(http_requests_total[5m])), 1e-9)
+
+
+
+-----8<----- FILE: infra\prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/recording-rules.yml
+
+scrape_configs:
+  # App-level metrics from Nest (/metrics on 3001)
+  - job_name: api-app
+    static_configs:
+      - targets: ["api-blue:3001", "api-green:3001"]
+
+  # (Keep the OTEL exporter if you already had it)
+  - job_name: api-otel
+    static_configs:
+      - targets: ["api-blue:9464", "api-green:9464"]
+
+  # Prometheus self
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+
+
+-----8<----- FILE: infra\grafana\dashboards\slo.json
+{
+  "schemaVersion": 38,
+  "title": "LaunchPad SLOs",
+  "timezone": "browser",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "P95 latency (s)",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 9 },
+      "targets": [{ "refId": "A", "expr": "slo:http_request_duration_seconds:p95:5m" }]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error rate (5xx, %)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 9 },
+      "targets": [{ "refId": "A", "expr": "100 * sli:http_error_rate:ratio:5m" }]
+    }
+  ]
+}
+
+
+
+-----8<----- FILE: infra\grafana\provisioning\dashboards\dashboards.yml
+apiVersion: 1
+providers:
+  - name: "LaunchPad Dashboards"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+
+
+
+-----8<----- FILE: infra\grafana\provisioning\datasources\datasource.yml
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+
+
+-----8<----- FILE: infra\postgres\init\001_init.sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+
+
+-----8<----- FILE: infra\postgres\init\002_schema.sql
+-- Core multi-tenant schema + RLS
+-- Requires extensions set in 001_init.sql (pgcrypto)
+
+CREATE TABLE IF NOT EXISTS tenants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  email TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS orgs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS memberships (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  org_id  UUID NOT NULL REFERENCES orgs(id)  ON DELETE CASCADE,
+  role    TEXT NOT NULL CHECK (role IN ('OWNER','ADMIN','MEMBER')),
+  PRIMARY KEY (user_id, org_id)
+);
+
+-- RLS: enforce tenant isolation by custom GUCs set per-request (app.tenant_id/app.user_id)
+ALTER TABLE users       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE orgs        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE memberships ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rls_users_tenant ON users
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+CREATE POLICY rls_orgs_tenant ON orgs
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+CREATE POLICY rls_memberships_tenant ON memberships
+  USING (
+    org_id IN (SELECT id FROM orgs WHERE tenant_id = current_setting('app.tenant_id', true)::uuid)
+  );
+
+-- Seed data: tenant, org, admin user (password: admin123!)
+WITH t AS (
+  INSERT INTO tenants (name) VALUES ('Acme') ON CONFLICT (name) DO NOTHING RETURNING id
+), tid AS (
+  SELECT id FROM t
+  UNION ALL
+  SELECT id FROM tenants WHERE name='Acme' AND NOT EXISTS (SELECT 1 FROM t)
+), o AS (
+  INSERT INTO orgs (tenant_id, name)
+  SELECT id, 'Acme HQ' FROM tid
+  ON CONFLICT DO NOTHING
+  RETURNING id, tenant_id
+), u AS (
+  INSERT INTO users (tenant_id, email, display_name, password_hash)
+  SELECT id, 'admin@acme.test', 'Acme Admin', crypt('admin123!', gen_salt('bf'))
+  FROM tid
+  ON CONFLICT (email) DO NOTHING
+  RETURNING id, tenant_id
+)
+INSERT INTO memberships (user_id, org_id, role)
+SELECT u.id, o.id, 'OWNER'
+FROM u, o
+ON CONFLICT DO NOTHING;
+
+
+
+-----8<----- FILE: infra\postgres\init\003_rbac_audit.sql
+-- RBAC & Audit Logs (M2)
+
+-- Audit table
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id   UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id     UUID REFERENCES users(id) ON DELETE SET NULL,
+  action      TEXT NOT NULL,
+  resource    TEXT,
+  resource_id UUID,
+  meta        JSONB,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- RLS: tenant isolation
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY rls_audit_tenant ON audit_logs
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+-- Seed a non-admin user to demo RBAC denies
+WITH tid AS (
+  SELECT id FROM tenants WHERE name='Acme' LIMIT 1
+), o AS (
+  SELECT id, tenant_id FROM orgs WHERE name='Acme HQ' AND tenant_id IN (SELECT id FROM tid) LIMIT 1
+), u AS (
+  INSERT INTO users (tenant_id, email, display_name, password_hash)
+  SELECT (SELECT id FROM tid), 'member@acme.test', 'Acme Member', crypt('member123!', gen_salt('bf'))
+  ON CONFLICT (email) DO NOTHING
+  RETURNING id, tenant_id
+)
+INSERT INTO memberships (user_id, org_id, role)
+SELECT (SELECT id FROM u), (SELECT id FROM o), 'MEMBER'
+ON CONFLICT DO NOTHING;
+
+
+
+-----8<----- FILE: infra\postgres\init\004_billing.sql
+-- Billing tables (tenant-scoped) + idempotent webhook ledger + feature flags
+
+CREATE TABLE IF NOT EXISTS billing_customers (
+  tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  stripe_customer_id TEXT UNIQUE NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  stripe_subscription_id TEXT UNIQUE NOT NULL,
+  status TEXT NOT NULL,
+  price_id TEXT,
+  product_id TEXT,
+  current_period_end TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Record every processed webhook event id to ensure idempotency
+CREATE TABLE IF NOT EXISTS processed_events (
+  event_id TEXT PRIMARY KEY,
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Simple tenant feature flags
+CREATE TABLE IF NOT EXISTS feature_flags (
+  tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  premium BOOLEAN NOT NULL DEFAULT false,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- RLS (tenant isolation)
+ALTER TABLE billing_customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE feature_flags   ENABLE ROW LEVEL SECURITY;
+-- processed_events is global (no tenant_id) -> no RLS
+
+CREATE POLICY rls_billing_customers ON billing_customers
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+CREATE POLICY rls_subscriptions ON subscriptions
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+CREATE POLICY rls_feature_flags ON feature_flags
+  USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+-- Seed a flags row for Acme tenant if missing
+INSERT INTO feature_flags(tenant_id, premium)
+SELECT t.id, false
+FROM tenants t
+WHERE t.name = 'Acme'
+ON CONFLICT (tenant_id) DO NOTHING;
+
+
+
+-----8<----- FILE: infra\postgres\init\005_billing_cancel_polish.sql
+-- Adds cancellation/renewal fields to subscriptions
+ALTER TABLE subscriptions
+  ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN,
+  ADD COLUMN IF NOT EXISTS cancel_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS canceled_at TIMESTAMPTZ;
+
+
+
+-----8<----- FILE: scripts\deploy.ps1
+param(
+  [Parameter(Mandatory=$true)][string]$ApiImage,
+  [Parameter(Mandatory=$true)][string]$WebImage,
+  [switch]$Smoke,
+  [int]$MaxWait = 60
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+Write-Output "Deploying GREEN with images"
+Write-Output "API: $ApiImage"
+Write-Output "WEB: $WebImage"
+
+# Pull images first
+docker pull $ApiImage | Out-Null
+docker pull $WebImage | Out-Null
+
+# Provide images to compose override
+$env:API_IMAGE_GREEN = $ApiImage
+$env:WEB_IMAGE_GREEN  = $WebImage
+
+# Start GREEN
+docker compose -f docker-compose.yml -f docker-compose.override.deploy.yml --profile green up -d api-green web-green
+
+# Health-check GREEN inside app network
+docker pull curlimages/curl:8.5.0 | Out-Null
+$net = "launchpad_app-net"
+
+function WaitHealthy([string]$url, [int]$limit) {
+  for ($i=1; $i -le $limit; $i++) {
+    $code = docker run --rm --network $net curlimages/curl:8.5.0 -s -o /dev/null -w "%{http_code}" $url
+    if ($code -eq "200") { return $true }
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
+
+if (-not (WaitHealthy "http://api-green:3001/health" $MaxWait)) { throw "api-green failed health" }
+if (-not (WaitHealthy "http://web-green:3000/"      $MaxWait)) { throw "web-green failed health" }
+
+# Switch edge to GREEN
+$env:ACTIVE_COLOR = "green"
+docker compose up -d edge
+
+# Verify edge externally
+$ok = $false
+for ($i=1; $i -le $MaxWait; $i++) {
+  try { Invoke-RestMethod http://localhost:8080/api/health | Out-Null; $ok = $true; break } catch { Start-Sleep -Seconds 2 }
+}
+if (-not $ok) { throw "edge failed after switch" }
+
+# Optional smoke
+if ($Smoke) {
+  $smokePath = Join-Path $PSScriptRoot "smoke.ps1"
+  & $smokePath -Tries 10 -DelaySeconds 2
+  Write-Output "Smoke PASS."
+}
+
+Write-Output "Deploy complete."
+
+
+
+-----8<----- FILE: scripts\rollback.ps1
+param(
+  [Parameter(Mandatory=$true)][ValidateSet("blue","green")]$ToColor
+)
+$ErrorActionPreference = "Stop"
+Write-Host "==> Rolling back traffic to $ToColor ..."
+$env:ACTIVE_COLOR = $ToColor
+docker compose up -d edge
+# Quick check
+for ($i=1;$i -le 30;$i++){
+  try { Invoke-RestMethod http://localhost:8080/api/health | Out-Null; break } catch { Start-Sleep 2 }
+}
+Write-Host "==> Rolled back. Current color: $ToColor"
+
+
+
+-----8<----- FILE: scripts\smoke.ps1
+param([int]$Tries=10,[int]$DelaySeconds=2)
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+function T200([string]$u) {
+  try {
+    $r = Invoke-WebRequest -UseBasicParsing -Uri $u -Method GET -TimeoutSec 5
+    return ($r.StatusCode -eq 200)
+  } catch { return $false }
+}
+
+for ($i=1; $i -le $Tries; $i++) {
+  if ( (T200 "http://localhost:8080/api/health") -and (T200 "http://localhost:8080/") ) { exit 0 }
+  Start-Sleep -Seconds $DelaySeconds
+}
+throw "Smoke failed"
+
+
+
