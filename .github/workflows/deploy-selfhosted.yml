@@ -28,9 +28,11 @@ jobs:
 
       - name: Docker login GHCR
         run: |
-          # Use stdin to avoid passing the token on the command line
-          [System.Text.Encoding]::UTF8.GetBytes("${{ secrets.GHCR_TOKEN }}") |
-            docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+          docker logout ghcr.io 2>$null | Out-Null
+          $u = "${{ secrets.GHCR_USERNAME }}"
+          $p = "${{ secrets.GHCR_TOKEN }}"
+          if (-not $u -or -not $p) { throw "GHCR secrets missing" }
+          $p | docker login ghcr.io -u $u --password-stdin
 
       - name: Pull images
         run: |
