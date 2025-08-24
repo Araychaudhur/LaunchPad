@@ -1,0 +1,52 @@
+name: Deploy (Blue/Green)
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_image:
+        description: "GHCR image for API (e.g., ghcr.io/org/repo/api:sha)"
+        required: true
+      web_image:
+        description: "GHCR image for Web (e.g., ghcr.io/org/repo/web:sha)"
+        required: true
+      smoke:
+        description: "Run smoke test after switch?"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔐 SSH into host and deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key:      ${{ secrets.DEPLOY_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.APP_DIR }}"
+
+            # Log in to GHCR on the remote host
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
+
+            # Pull images so the deploy uses fresh bits (idempotent)
+            docker pull "${{ inputs.api_image }}"
+            docker pull "${{ inputs.web_image }}"
+
+            # Ensure scripts have the right permissions
+            chmod +x scripts/deploy.sh scripts/smoke.sh || true
+
+            # Deploy to GREEN and switch edge
+            if [ "${{ inputs.smoke }}" = "true" ]; then
+              ./scripts/deploy.sh "${{ inputs.api_image }}" "${{ inputs.web_image }}" --smoke
+            else
+              ./scripts/deploy.sh "${{ inputs.api_image }}" "${{ inputs.web_image }}"
+            fi

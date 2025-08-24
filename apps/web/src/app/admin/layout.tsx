@@ -8,8 +8,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <nav style={{ display: "flex", gap: 12 }}>
           <Link href="/admin">Orgs</Link>
           <Link href="/admin/profile">Profile</Link>
-          <Link href="/">Home</Link>
           <Link href="/billing">Billing</Link>
+          <Link href="/admin/invites">Invites</Link>
+          <Link href="/">Home</Link>
         </nav>
       </header>
       <hr style={{ margin: "12px 0 24px" }} />

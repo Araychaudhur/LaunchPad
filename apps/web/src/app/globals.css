@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base look & feel */
+@layer base {
+  html, body { height: 100%; }
+  body { @apply bg-[#0b0f1a] text-slate-200 antialiased; }
+  a { @apply text-sky-400 hover:underline; }
+  h1,h2,h3 { @apply font-semibold tracking-tight; }
+  code, pre { @apply rounded bg-slate-900/60 px-1 py-0.5; }
+  button {
+    @apply inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm font-medium hover:bg-slate-700 active:scale-[.99];
+  }
+  input {
+    @apply rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100 placeholder-slate-400;
+  }
+}

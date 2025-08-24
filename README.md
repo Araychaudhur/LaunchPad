@@ -11,6 +11,85 @@ A bootable starter for a production-grade, multi-tenant SaaS: **Next.js (web)**,
 Copy-Item .env.example .env
 docker compose up --build -d
 ````
+## LaunchPad — Phase 2 UI + Backend Enhancements
+
+This update completes the **presentation tier** and adds two production-grade backend features while keeping the stack and dev workflow unchanged.
+
+## What’s new
+
+- **UI (Phase 2)**
+  - Global header/app shell
+  - Polished pages: Home, Sign in, Admin (Orgs + Profile), Billing, Premium
+- **Bonus polish**
+  - “Create sample org” button (POST `/api/orgs`)
+  - Friendly global error boundary and custom 404
+- **Backend**
+  - **Optimistic concurrency** for org updates via `version` column and **ETag**:
+    - `PATCH /api/orgs/:id` requires `If-Match: W/"<version>"`
+    - On version mismatch → `412 Precondition Failed` (prevents lost updates)
+  - **Cursor pagination** for audit logs:
+    - `GET /api/audit-logs?limit=20&before=<id>` returns `{ items, nextCursor }`
+
+---
+
+## Files changed/added
+
+**Web (Next.js)**
+- `apps/web/package.json`, `apps/web/postcss.config.js`, `apps/web/tailwind.config.js`, `apps/web/src/app/globals.css`, `apps/web/Dockerfile`
+- `apps/web/src/app/layout.tsx`, `apps/web/src/app/page.tsx`
+- `apps/web/src/components/header.tsx`
+- `apps/web/src/app/signin/page.tsx`
+- `apps/web/src/app/admin/layout.tsx`, `apps/web/src/app/admin/page.tsx`, `apps/web/src/app/admin/profile/page.tsx`
+- **Bonus:** `apps/web/src/components/create-org.tsx`, `apps/web/src/app/not-found.tsx`, `apps/web/src/app/error.tsx`
+- **Backend UI hooks:** `apps/web/src/components/org-rename.tsx`, `apps/web/src/components/audit-list.tsx`, `apps/web/src/app/admin/audit/page.tsx`
+
+**API (NestJS)**
+- `apps/api/src/orgs.controller.ts` (ETag-aware update endpoint)
+- `apps/api/src/audit.controller.ts` (cursor-based pagination)
+
+**Database**
+- `infra/postgres/init/006_orgs_version.sql` (adds `orgs.version`)
+
+---
+## Blue/Green tip
+
+If the browser shows an empty response, your shell may be overriding `.env`:
+
+```powershell
+$env:ACTIVE_COLOR = "blue"
+docker compose up -d --force-recreate edge
+```
+
+## Stripe (test mode)
+
+Set the following in `.env`:
+
+```
+APP_URL=http://localhost:8080
+STRIPE_SECRET_KEY=sk_test_...
+STRIPE_PRICE_ID=price_...   # must be a recurring price
+# Optional (for webhooks via Stripe CLI):
+# STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+## Billing troubleshooting
+
+* **500 on “Subscribe (test mode)” with a foreign-key error**
+  Sign **out** and sign back **in** to refresh the JWT (tenant id may have changed).
+* **Tables missing (older DB volume)**
+  Re-apply `infra/postgres/init/004_billing.sql` (and `005_*.sql` if present) or recreate the DB volume.
+* **Not redirected to Stripe**
+  Ensure `STRIPE_PRICE_ID` is **recurring** and `APP_URL` is set; restart `api-*` to pick up env changes.
+
+## Verification checklist
+
+* `GET /health` → `200` (edge)
+* `GET /api/health` → `{ status: "ok", service: "api" }`
+* `/signin` works (default creds shown on the page)
+* `/admin` lists orgs; `/admin/profile` shows your user JSON
+* `/billing` loads status; **Subscribe** redirects to Stripe in test mode
+* `/premium` is gated until subscription is active
+
 
 ### Open these in your browser
 
@@ -36,6 +115,8 @@ docker compose up -d edge
 Switch back by setting `ACTIVE_COLOR="blue"` and restarting `edge`.
 
 ---
+
+
 
 ## Milestones & Progress
 
@@ -304,6 +385,57 @@ $db = (Select-String -Path .env -Pattern '^POSTGRES_DB=').Line.Split('=')[1]
 docker compose cp infra/postgres/init/004_billing.sql postgres:/tmp/004_billing.sql
 docker compose exec -T postgres psql -U $u -d $db -v ON_ERROR_STOP=1 -f /tmp/004_billing.sql
 ```
+---
+
+## New API details
+
+### 1) Update org name with ETag (optimistic concurrency)
+
+**Request**
+
+```
+PATCH /api/orgs/:id
+Headers:
+  Authorization: Bearer <token>
+  If-Match: W/"<version>"
+Body:
+  { "name": "New Name" }
+```
+
+**Responses**
+
+* `200` → `{ id, name, version }` (version increments)
+* `412 Precondition Failed` → stale ETag (someone edited first)
+* `400` → missing name or missing `If-Match`
+
+### 2) Audit logs with cursor pagination
+
+```
+GET /api/audit-logs?limit=20
+GET /api/audit-logs?limit=20&before=<last_seen_id>
+```
+
+**Response**
+
+```json
+{
+  "items": [{ "id":"...", "action":"org.update", "created_at":"..." }, ...],
+  "nextCursor": "..." | null
+}
+```
+---
+
+## Troubleshooting
+
+* **Edge empty response**: ensure active color is blue:
+
+  ```powershell
+  $env:ACTIVE_COLOR = "blue"; docker compose up -d --force-recreate edge
+  ```
+* **Billing 500 on Subscribe**: sign **out** then sign **in** to refresh JWT (tenant id), and ensure tables from `004_billing.sql` exist.
+* **Not redirected to Stripe**: `STRIPE_PRICE_ID` must be **recurring**; `APP_URL` set; recreate `api-*`.
+* **SSR “Digest …” page**: global error boundary and 404 are in place; if a page fails server-side, you’ll now get a friendly UI state instead of a crash.
+
 ---
 
 ## Project structure (key parts)
