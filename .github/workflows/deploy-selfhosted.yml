@@ -14,6 +14,10 @@ on:
         type: boolean
         default: true
 
+permissions:
+    contents: read
+    packages: read
+
 jobs:
   deploy:
     runs-on: [self-hosted, Windows, X64]
@@ -26,12 +30,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Docker login GHCR
+      - name: Docker login to GHCR (GITHUB_TOKEN)
         run: |
           docker logout ghcr.io 2>$null | Out-Null
-          $u = "${{ secrets.GHCR_USERNAME }}"
-          $p = "${{ secrets.GHCR_TOKEN }}"
-          if (-not $u -or -not $p) { throw "GHCR secrets missing" }
+          $u = "${{ github.actor }}"
+          $p = "${{ github.token }}"
           $p | docker login ghcr.io -u $u --password-stdin
 
       - name: Pull images
@@ -43,3 +46,4 @@ jobs:
         run: |
           $smoke = [bool]::Parse("${{ inputs.smoke }}")
           .\scripts\deploy.ps1 -ApiImage "${{ inputs.api_image }}" -WebImage "${{ inputs.web_image }}" -Smoke:$smoke
+
