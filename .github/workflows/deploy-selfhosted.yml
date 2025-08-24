@@ -15,8 +15,8 @@ on:
         default: true
 
 permissions:
-    contents: read
-    packages: read
+  contents: read
+  packages: read
 
 jobs:
   deploy:
@@ -30,11 +30,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Docker login to GHCR (GITHUB_TOKEN)
+      - name: Docker login GHCR (PAT)
         run: |
           docker logout ghcr.io 2>$null | Out-Null
-          $u = "${{ github.actor }}"
-          $p = "${{ github.token }}"
+          $u = "${{ secrets.GHCR_USERNAME }}"
+          $p = "${{ secrets.GHCR_TOKEN }}"
+          if (-not $u -or -not $p) { throw "GHCR secrets missing" }
           $p | docker login ghcr.io -u $u --password-stdin
 
       - name: Pull images
