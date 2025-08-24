@@ -1,0 +1,44 @@
+name: Deploy (Self-hosted Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_image:
+        description: "GHCR image for API (e.g., ghcr.io/org/repo/api:sha-xxxx)"
+        required: true
+      web_image:
+        description: "GHCR image for Web (e.g., ghcr.io/org/repo/web:sha-xxxx)"
+        required: true
+      smoke:
+        description: "Run smoke test after switch?"
+        type: boolean
+        default: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, windows]   # runs on your PC
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker login GHCR
+        shell: pwsh
+        env:
+          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          Write-Host "Logging into GHCR..."
+          $env:GHCR_TOKEN | docker login ghcr.io -u $env:GHCR_USERNAME --password-stdin
+
+      - name: Pull images
+        shell: pwsh
+        run: |
+          docker pull "${{ inputs.api_image }}"
+          docker pull "${{ inputs.web_image }}"
+
+      - name: Deploy (PowerShell blue/green)
+        shell: pwsh
+        run: |
+          $smoke = [bool]::Parse("${{ inputs.smoke }}")
+          .\scripts\deploy.ps1 -ApiImage "${{ inputs.api_image }}" -WebImage "${{ inputs.web_image }}" -Smoke:$smoke
