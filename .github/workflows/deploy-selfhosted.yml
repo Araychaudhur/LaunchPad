@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       api_image:
-        description: "GHCR image for API (e.g., ghcr.io/org/repo-api:sha-xxxx)"
+        description: "GHCR image for API (e.g., ghcr.io/user/repo-api:sha-xxxx)"
         required: true
       web_image:
-        description: "GHCR image for Web (e.g., ghcr.io/org/repo-web:sha-xxxx)"
+        description: "GHCR image for Web (e.g., ghcr.io/user/repo-web:sha-xxxx)"
         required: true
       smoke:
         description: "Run smoke test after switch?"
@@ -22,6 +22,11 @@ jobs:
   deploy:
     runs-on: [self-hosted, Windows, X64]
 
+    # make secrets available as environment variables to every step
+    env:
+      GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+
     defaults:
       run:
         shell: powershell
@@ -30,13 +35,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Docker login GHCR (PAT)
+      - name: Debug (lengths only, still masked)
+        run: |
+          $u = "$env:GHCR_USERNAME"
+          $p = "$env:GHCR_TOKEN"
+          if (-not $u -or -not $p) { throw "Secrets missing" }
+          Write-Host "Username length: $($u.Length)"
+          Write-Host "Token length: $($p.Length)"
+
+      - name: Docker login GHCR (PAT via env)
         run: |
           docker logout ghcr.io 2>$null | Out-Null
-          $u = "${{ secrets.GHCR_USERNAME }}"
-          $p = "${{ secrets.GHCR_TOKEN }}"
-          if (-not $u -or -not $p) { throw "GHCR secrets missing" }
-          $p | docker login ghcr.io -u $u --password-stdin
+          $env:GHCR_TOKEN | docker login ghcr.io -u $env:GHCR_USERNAME --password-stdin
 
       - name: Pull images
         run: |
@@ -47,4 +57,3 @@ jobs:
         run: |
           $smoke = [bool]::Parse("${{ inputs.smoke }}")
           .\scripts\deploy.ps1 -ApiImage "${{ inputs.api_image }}" -WebImage "${{ inputs.web_image }}" -Smoke:$smoke
-
